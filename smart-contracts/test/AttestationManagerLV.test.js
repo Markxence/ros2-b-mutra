@@ -28,7 +28,7 @@ describe("AttestationManagerLV — IterQ (per-attestation K)", function () {
   beforeEach(async () => {
     [secaas, prover] = await ethers.getSigners();
     AM = await ethers.getContractFactory("AttestationManagerLV", secaas);
-    am = await AM.deploy(1); // VRP=1
+    am = await AM.deploy();
     await am.waitForDeployment();
     await am.connect(prover).RegisterAgent("p1");
   });
@@ -114,6 +114,6 @@ describe("AttestationManagerLV — IterQ (per-attestation K)", function () {
     // Close the round positively. With VRP=1 this stores Closed state.
     await expect(am.connect(secaas).CloseAttestationProcess(id, true))
       .to.emit(am, "AttestationCompleted")
-      .withArgs(id, true);
+      .withArgs(id);
   });
 });
