@@ -31,17 +31,17 @@
 #                           [--attack-at-k K] [--ssp-list "10000 20000 30000"]
 #                           [--scenarios "..."] [--mission-timeout S]
 #                           [--world NAME] [--gpu on|off]
-#                           [--password VALUE] [--dry-run]
+#                           [--dry-run]
 #
 # Run it in small pieces (recommended — one thing at a time so you can inspect):
 #   # one baseline run
-#   ./tools/run_campaign.sh --scenarios baseline --reps 1 --password "nextnet;"
+#   ./tools/run_campaign.sh --scenarios baseline --reps 1
 #   # one unmitigated (plateau) run
-#   ./tools/run_campaign.sh --scenarios unmitigated --reps 1 --password "nextnet;"
+#   ./tools/run_campaign.sh --scenarios unmitigated --reps 1
 #   # one mitigated run at a single SSP you want to play with
-#   ./tools/run_campaign.sh --scenarios mitigated --ssp-list 20000 --reps 1 --password "nextnet;"
+#   ./tools/run_campaign.sh --scenarios mitigated --ssp-list 20000 --reps 1
 #   # add a 2nd/3rd repetition later WITHOUT overwriting r1 (accumulate):
-#   ./tools/run_campaign.sh --scenarios baseline --reps 1 --rep-start 2 --password "nextnet;"
+#   ./tools/run_campaign.sh --scenarios baseline --reps 1 --rep-start 2
 #
 # There is always exactly ONE victim (default robot3); the swarm size is fixed
 # at 4. Defaults below — override any via flags or env.
@@ -76,7 +76,6 @@ SCENARIOS="${SCENARIOS:-baseline unmitigated mitigated}"
 MISSION_TIMEOUT_S="${MISSION_TIMEOUT_S:-400}"   # orchestrator give-up; bounds the unmitigated plateau
                                                 # (32-waypoint arena mission: baseline ~3min,
                                                 #  mitigated ~4-5min, so keep this generous)
-PASSWORD="${PASSWORD:-nextnet;}"
 COOLDOWN_S="${COOLDOWN_S:-60}"   # let the host fully settle between batched runs (reduces load-jitter outliers)
 CLOCK_TIMEOUT_S="${CLOCK_TIMEOUT_S:-360}"   # max wait for mission to start after start.sh
 PROGRESS_TIMEOUT_S="${PROGRESS_TIMEOUT_S:-180}"  # max wait for victim to reach K waypoints
@@ -97,7 +96,6 @@ while [[ $# -gt 0 ]]; do
     --scenarios)       SCENARIOS="$2"; shift 2 ;;
     --mission-timeout) MISSION_TIMEOUT_S="$2"; shift 2 ;;
     --world)           WORLD="$2"; shift 2 ;;
-    --password)        PASSWORD="$2"; shift 2 ;;
     --gpu)             GPU="$2"; shift 2 ;;
     --dry-run)         DRY_RUN="true"; shift ;;
     -h|--help)         sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -228,7 +226,7 @@ one_run() {
   if [[ "$DRY_RUN" == "true" ]]; then
     log "   (dry-run) MISSION_TIMEOUT_S=$MISSION_TIMEOUT_S ./start.sh --robots 4 --nav2 \
 --world $WORLD --attest-mission-agent --mission --auto \
---mitigation $mit --run-tag $tag --ssp $ssp $([[ "$GPU" == "on" ]] && echo --gpu) --password '***'"
+--mitigation $mit --run-tag $tag --ssp $ssp $([[ "$GPU" == "on" ]] && echo --gpu)"
     return 0
   fi
 
@@ -238,12 +236,12 @@ one_run() {
     --robots 4 --nav2 --world "$WORLD" \
     --attest-mission-agent --mission --auto \
     --mitigation "$mit" --run-tag "$tag" --ssp "$ssp" \
-    "${gpu_flag[@]}" --password "$PASSWORD"
+    "${gpu_flag[@]}"
 
   log "⏳ waiting for mission to start (clock)…"
   if ! wait_clock_started; then
     log "❌ mission never started for $tag — tearing down and skipping"
-    ./stop.sh --password "$PASSWORD" >/dev/null 2>&1 || true
+    ./stop.sh >/dev/null 2>&1 || true
     return 1
   fi
   log "🟢 mission started"
@@ -305,7 +303,7 @@ else: print(('VALID' if v else 'INVALID'), rtf)
   fi
 
   log "🧹 teardown"
-  ./stop.sh --password "$PASSWORD" >/dev/null 2>&1 || ./stop.sh --password "$PASSWORD"
+  ./stop.sh >/dev/null 2>&1 || ./stop.sh
   sleep "$COOLDOWN_S"
 }
 

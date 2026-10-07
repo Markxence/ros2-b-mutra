@@ -7,53 +7,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One Compose project name for ALL stacks
 PROJECT_NAME="ros2-b-mutra"
 
-PASSWORD="netcom;"
-
 # Remote host constants
 REMOTE1_HOST="10.5.1.20"
 REMOTE1_USER="nextnet"
-REMOTE1_PASSWORD="nextnet;"
 REMOTE1_LIMIT=64
 REMOTE2_HOST=""          # placeholder — set when a second remote host is available
 REMOTE2_USER="nextnet"
-REMOTE2_PASSWORD="nextnet;"
 REMOTE_DIR="~/ros2-b-mutra"
 
 # Read N_ROBOTS and DEPLOY_MODE from .env
 ENV_FILE="$SCRIPT_DIR/.env"
 N_ROBOTS_VAL=4
 DEPLOY_MODE="local"
-
-usage() {
-  cat <<EOF
-Usage: $(basename "$0") [--password VALUE]
-
-Options:
-  --password VALUE  Password piped into sudo for local teardown and checkpoint reset (default: netcom;)
-  -h|--help         Show this help
-
-EOF
-}
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --password)
-      if [[ -z "${2-}" ]]; then
-        echo "❌ --password requires a value"
-        exit 1
-      fi
-      PASSWORD="$2"
-      shift 2 ;;
-    -h|--help)
-      usage
-      exit 0 ;;
-    *)
-      echo "❌ Unknown arg: $1"
-      echo
-      usage
-      exit 1 ;;
-  esac
-done
 
 if [[ -f "$ENV_FILE" ]]; then
   _n=$(grep -oP '(?<=^N_ROBOTS=)\d+' "$ENV_FILE" || true)
@@ -63,7 +28,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # ── Stop monitoring (d-mutra always) ──────────────────────────────────────────
-echo "$PASSWORD" | sudo -S docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.monitoring.yml" down
+docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.monitoring.yml" down
 
 # ══════════════════════════════════════════════════════════════════════════════
 if [[ "$DEPLOY_MODE" == "remote" ]]; then
@@ -73,31 +38,31 @@ if [[ "$DEPLOY_MODE" == "remote" ]]; then
 
   # Stop monitoring on remote1
   ssh "$REMOTE1_USER@$REMOTE1_HOST" \
-    "cd $REMOTE_DIR && echo '$REMOTE1_PASSWORD' | sudo -S docker compose -p $PROJECT_NAME \
+    "cd $REMOTE_DIR && docker compose -p $PROJECT_NAME \
      -f $REMOTE_DIR/docker-compose.monitoring.yml down" || true
 
   # Stop monitoring on remote2 if used
   if (( N_ROBOTS_VAL > REMOTE1_LIMIT )) && [[ -n "$REMOTE2_HOST" ]]; then
     ssh "$REMOTE2_USER@$REMOTE2_HOST" \
-      "cd $REMOTE_DIR && echo '$REMOTE2_PASSWORD' | sudo -S docker compose -p $PROJECT_NAME \
+      "cd $REMOTE_DIR && docker compose -p $PROJECT_NAME \
        -f $REMOTE_DIR/docker-compose.monitoring.yml down" || true
   fi
 
   # Stop sidecars and robots on remote1
   ssh "$REMOTE1_USER@$REMOTE1_HOST" \
     "cd $REMOTE_DIR && \
-     echo '$REMOTE1_PASSWORD' | sudo -S docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
+     docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
        -f $REMOTE_DIR/generated/docker-compose.attestation-N${N_ROBOTS_VAL}-remote1.yml down && \
-     echo '$REMOTE1_PASSWORD' | sudo -S docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
+     docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
        -f $REMOTE_DIR/generated/docker-compose.robots-N${N_ROBOTS_VAL}-remote1.yml down"
 
   # Stop sidecars and robots on remote2 if used
   if (( N_ROBOTS_VAL > REMOTE1_LIMIT )) && [[ -n "$REMOTE2_HOST" ]]; then
     ssh "$REMOTE2_USER@$REMOTE2_HOST" \
       "cd $REMOTE_DIR && \
-       echo '$REMOTE2_PASSWORD' | sudo -S docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
+       docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
          -f $REMOTE_DIR/generated/docker-compose.attestation-N${N_ROBOTS_VAL}-remote2.yml down && \
-       echo '$REMOTE2_PASSWORD' | sudo -S docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
+       docker compose -p $PROJECT_NAME --project-directory $REMOTE_DIR \
          -f $REMOTE_DIR/generated/docker-compose.robots-N${N_ROBOTS_VAL}-remote2.yml down"
   fi
 
@@ -105,18 +70,18 @@ else
 # ── LOCAL MODE teardown: everything on d-mutra ────────────────────────────────
 
   # Orchestrator (patrol mission experiments) — harmless if it was never started.
-  echo "$PASSWORD" | sudo -S docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.orchestrator.yml" down 2>/dev/null || true
+  docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.orchestrator.yml" down 2>/dev/null || true
   # Formation experiment (orchestrator + bag-recorder) — stopping the recorder
   # here is what flushes/closes the ros2 bag cleanly. Harmless if never started.
-  echo "$PASSWORD" | sudo -S docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.formation.yml" down 2>/dev/null || true
-  echo "$PASSWORD" | sudo -S docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.attestation.yml" down
-  echo "$PASSWORD" | sudo -S docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.robots.yml" down
+  docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.formation.yml" down 2>/dev/null || true
+  docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.attestation.yml" down
+  docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.robots.yml" down
 
 fi
 # ══════════════════════════════════════════════════════════════════════════════
 
 # SECaaS and blockchain always on d-mutra
-echo "$PASSWORD" | sudo -S docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.secaas.yml" down
+docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.secaas.yml" down
 
 # Remove blockchain network
 cd "$SCRIPT_DIR/blockchain/quorum-test-network"
@@ -128,7 +93,7 @@ RESET_SCRIPT="$CHECKPOINT_DIR/reset_event_watcher.sh"
 
 if [[ -d "$CHECKPOINT_DIR" && -f "$RESET_SCRIPT" ]]; then
   echo "🧹 Resetting EventWatcher checkpoints..."
-  ( cd "$CHECKPOINT_DIR" && echo "$PASSWORD" | sudo -S bash "./$(basename "$RESET_SCRIPT")" )
+  docker run --rm -v "$CHECKPOINT_DIR":/cp alpine sh -c 'find /cp -name "*.json" -delete'
 else
   echo "⚠️  Checkpoints reset skipped (missing $RESET_SCRIPT or $CHECKPOINT_DIR)"
 fi
