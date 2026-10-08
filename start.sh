@@ -326,10 +326,6 @@ fi
 # two approvals out of three.
 ADMIN_NODES_DIR="$SCRIPT_DIR/blockchain/quorum-test-network/config/nodes"
 if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
-  if [[ "$DEPLOY_MODE" != "local" ]]; then
-    echo "❌ --contract v2 is only wired for local mode (reference anchoring is not run in remote mode)"
-    exit 1
-  fi
   ADMINS=""
   for v in 2 3 4; do
     admin_addr="$(jq -er '"0x" + (.address | ltrimstr("0x"))' "$ADMIN_NODES_DIR/validator$v/accountKeystore")" \
@@ -376,11 +372,11 @@ fi
 # containers with AUTO_START=FALSE so the prover doesn't fire SendEvidence
 # against the placeholder refs in the DB while we're capturing real ones.
 # We restore .env to the user's intent and trigger /start via HTTP after
-# the bootstrap step finishes. In --no-bootstrap mode (or remote mode),
-# AUTO_START is passed through as-is.
+# the bootstrap step finishes. In --no-bootstrap mode, AUTO_START is passed
+# through as-is.
 WANT_AUTO_START="$AUTO_START_VAL"
 EFFECTIVE_AUTO_START="$AUTO_START_VAL"
-if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" && "$AUTO_START_VAL" == "TRUE" ]]; then
+if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$AUTO_START_VAL" == "TRUE" ]]; then
   EFFECTIVE_AUTO_START="FALSE"   # hold the workers until bootstrap is done
 fi
 
@@ -672,6 +668,17 @@ anchor_references() {
     "$ADMIN_NODES_DIR/validator3/accountPrivateKey"
 }
 
+# Host that publishes the HTTP port of robot <i>'s sidecar (8000 + i).
+sidecar_host() {
+  if [[ "$DEPLOY_MODE" == "local" ]]; then
+    echo "localhost"
+  elif (( $1 <= REMOTE1_LIMIT )); then
+    echo "$REMOTE1_HOST"
+  else
+    echo "$REMOTE2_HOST"
+  fi
+}
+
 # ── Reference measurements bootstrap ──────────────────────────────────────────
 # Capture the *real* triplet (robot_hash, sidecar_hash, combined_hash) from
 # robot1's sidecar, patch every ref-measurements/robot{i}.json with it, and
@@ -682,9 +689,10 @@ anchor_references() {
 # After this, if the user passed --auto, we trigger /start on SECaaS and on
 # every sidecar to launch the workers that we deliberately held back during
 # container boot (see the EFFECTIVE_AUTO_START stashing above).
-if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
+if [[ "$BOOTSTRAP_REFS" == "TRUE" ]]; then
+  SOURCE_HOST="$(sidecar_host 1)"
   echo
-  echo "🔧 Bootstrapping real reference measurements..."
+  echo "🔧 Bootstrapping real reference measurements (robot1 on $SOURCE_HOST)..."
 
   # Wait for robot1's sidecar to be reachable AND for its target binary
   # (robot_state_publisher / dummy_publisher) to be alive in the robot
@@ -693,7 +701,7 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
   max_attempts=70   # = up to 2 minutes
   attempt=1
   while (( attempt <= max_attempts )); do
-    if curl -s "http://localhost:8001/digest" 2>/dev/null | grep -q '"combined_hash"'; then
+    if curl -s "http://$SOURCE_HOST:8001/digest" 2>/dev/null | grep -q '"combined_hash"'; then
       echo "✅ robot1 /digest is ready."
       break
     fi
@@ -704,7 +712,8 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
   if (( attempt > max_attempts )); then
     echo "⚠️  /digest didn't come up in time. Skipping bootstrap — attestations will FAIL on placeholder refs until you run bootstrap_ref_measurements.py manually."
   else
-    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" --sync-secaas "${BOOTSTRAP_FLAGS[@]}" \
+    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" \
+        --sidecar-host "$SOURCE_HOST" --sync-secaas "${BOOTSTRAP_FLAGS[@]}" \
       && anchor_references \
       && echo "🧹 Resetting on-chain attestation chain..." \
       && curl -s -X POST "$SECAAS_URL/reset" | jq . \
@@ -720,35 +729,8 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
     echo "▶ Auto-starting attestation workers (SECaaS + sidecars)..."
     curl -s -X POST "$SECAAS_URL/start" | jq .
     for i in $(seq 1 "$N_ROBOTS_VAL"); do
-      curl -s -X POST "http://localhost:$((8000 + i))/start" | jq -c .
+      curl -s -X POST "http://$(sidecar_host "$i"):$((8000 + i))/start" | jq -c .
     done
-  fi
-elif [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "remote" ]]; then
-  echo
-  echo "🔧 Bootstrapping real reference measurements (remote)..."
-
-  max_attempts=60   # = up to 2 minutes
-  attempt=1
-  while (( attempt <= max_attempts )); do
-    if curl -s "http://$REMOTE1_HOST:8001/digest" 2>/dev/null | grep -q '"combined_hash"'; then
-      echo "✅ robot1 /digest is ready."
-      break
-    fi
-    echo "   (Attempt $attempt/$max_attempts) Waiting for /digest on $REMOTE1_HOST:8001..."
-    sleep 2
-    (( attempt++ ))
-  done
-  if (( attempt > max_attempts )); then
-    echo "⚠️  /digest didn't come up in time. Run bootstrap manually:"
-    echo "      python3 bootstrap_ref_measurements.py --robots $N_ROBOTS_VAL --sidecar-host $REMOTE1_HOST --sync-secaas"
-  else
-    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" \
-      --robots "$N_ROBOTS_VAL" \
-      --sidecar-host "$REMOTE1_HOST" \
-      --sync-secaas \
-      && echo "🧹 Resetting on-chain attestation chain..." \
-      && curl -s -X POST "$SECAAS_URL/reset" | jq . \
-      || echo "⚠️  Bootstrap failed — attestations may close as FAILURE."
   fi
 fi
 
