@@ -7,12 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One Compose project name for ALL stacks
 PROJECT_NAME="ros2-b-mutra"
 
-# Remote host constants
-REMOTE1_HOST="10.5.1.20"
-REMOTE1_USER="nextnet"
+# Remote hosts: same variables and defaults as start.sh
+REMOTE1_HOST="${REMOTE1_HOST:-10.5.1.20}"
+REMOTE1_USER="${REMOTE1_USER:-nextnet}"
 REMOTE1_LIMIT=64
-REMOTE2_HOST=""          # placeholder — set when a second remote host is available
-REMOTE2_USER="nextnet"
+REMOTE2_HOST="${REMOTE2_HOST:-}"   # set when a second remote host is available
+REMOTE2_USER="${REMOTE2_USER:-nextnet}"
 REMOTE_DIR="~/ros2-b-mutra"
 
 # Read N_ROBOTS and DEPLOY_MODE from .env

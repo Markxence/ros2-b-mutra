@@ -10,12 +10,13 @@ SECAAS_URL="http://localhost:8000"
 # One Compose project name for ALL stacks
 PROJECT_NAME="ros2-b-mutra"
 
-# Remote host constants
-REMOTE1_HOST="10.5.1.20"
-REMOTE1_USER="nextnet"
+# Remote hosts. The defaults are the 5TONIC bench; export the variables to
+# deploy elsewhere (same values for stop.sh).
+REMOTE1_HOST="${REMOTE1_HOST:-10.5.1.20}"
+REMOTE1_USER="${REMOTE1_USER:-nextnet}"
 REMOTE1_LIMIT=64
-REMOTE2_HOST=""          # placeholder — set when a second remote host is available
-REMOTE2_USER="nextnet"
+REMOTE2_HOST="${REMOTE2_HOST:-}"   # set when a second remote host is available
+REMOTE2_USER="${REMOTE2_USER:-nextnet}"
 REMOTE2_LIMIT=128
 REMOTE_DIR="~/ros2-b-mutra"
 
@@ -23,7 +24,7 @@ REMOTE_DIR="~/ros2-b-mutra"
 # sidecars on remote machines know where to reach the Besu validators on d-mutra.
 # The quorum compose file no longer binds to this IP directly; it uses "21001:8545"
 # (all-interfaces) so no LOCAL_IP export is needed for docker compose.
-LOCAL_IP="10.5.99.99"
+LOCAL_IP="${LOCAL_IP:-10.5.99.99}"
 
 # Ignore orphan warnings when using multiple compose files for the same project
 export COMPOSE_IGNORE_ORPHANS=1
