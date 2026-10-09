@@ -42,10 +42,15 @@ contract AttestationManagerV2 {
     mapping(bytes32 => MutualAttestation) private attestation;
     mapping(address => uint256) private indexOf;
 
-    // Admin keys, distinct from the SECaaS key. They will be the only ones
-    // allowed to write the on-chain references.
+    // Reference anchoring. referenceOf[agent] is written by the admins only,
+    // never by the SECaaS. It holds SHA256(h_ref || salt_agent), so reading
+    // it does not reveal which binary the agent runs.
     mapping(address => bool) public isAdmin;
     uint256 public adminThreshold;
+    mapping(address => bytes32) public referenceOf;
+    mapping(address => uint256) public referenceVersion;
+    mapping(bytes32 => mapping(address => bool)) private approvedBy;
+    mapping(bytes32 => uint256) private approvalCount;
 
     event AgentRegistered(address agent);
     event AgentRemoved(address agent);
@@ -53,6 +58,8 @@ contract AttestationManagerV2 {
     event ReadyForEvaluation(bytes32 id);
     event AttestationCompleted(bytes32 id);
     event ChainReset();
+    event ReferenceApproved(address indexed agent, bytes32 newReference, address indexed admin);
+    event ReferenceSet(address indexed agent, bytes32 oldReference, bytes32 newReference, uint256 version);
 
     constructor(address[] memory admins, uint256 threshold) {
         secaas = msg.sender;
@@ -67,6 +74,27 @@ contract AttestationManagerV2 {
             isAdmin[admins[i]] = true;
         }
         adminThreshold = threshold;
+    }
+
+    // An admin approves newReference for an agent. The reference changes once
+    // adminThreshold distinct admins have approved the same value. Approvals
+    // are bound to the current version, so they cannot be replayed later.
+    function SetReference(address agentAddress, bytes32 newReference) public {
+        require(isAdmin[msg.sender], "SetReference : caller is not an admin");
+        require(newReference != bytes32(0), "SetReference : empty reference");
+
+        bytes32 proposal = keccak256(abi.encode(agentAddress, newReference, referenceVersion[agentAddress]));
+        require(!approvedBy[proposal][msg.sender], "SetReference : already approved by this admin");
+        approvedBy[proposal][msg.sender] = true;
+        approvalCount[proposal]++;
+        emit ReferenceApproved(agentAddress, newReference, msg.sender);
+
+        if (approvalCount[proposal] < adminThreshold) return;
+
+        bytes32 oldReference = referenceOf[agentAddress];
+        referenceOf[agentAddress] = newReference;
+        referenceVersion[agentAddress]++;
+        emit ReferenceSet(agentAddress, oldReference, newReference, referenceVersion[agentAddress]);
     }
 
     function ResetChain() public {
