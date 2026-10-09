@@ -58,3 +58,37 @@ describe("AttestationManagerV2: anchored reference", function () {
     expect(await am.referenceOf(robot.address)).to.equal(b32("v1"));
   });
 });
+
+describe("AttestationManagerV2: the verifier gets the anchored reference", function () {
+  let secaas, a1, robotA, robotB, am;
+  const REF = b32("ref");
+
+  beforeEach(async () => {
+    [secaas, a1, robotA, robotB] = await ethers.getSigners();
+    const AM = await ethers.getContractFactory("AttestationManagerV2", secaas);
+    am = await AM.deploy([a1.address], 1);
+    await am.waitForDeployment();
+    for (const r of [robotA, robotB]) {
+      await am.connect(r).RegisterAgent("r");
+      await am.connect(a1).SetReference(r.address, REF);
+    }
+  });
+
+  it("rejects evidence from an agent without an anchored reference", async () => {
+    const [, , , , robotC] = await ethers.getSigners();
+    await am.connect(robotC).RegisterAgent("c");
+    await expect(am.connect(robotC).SendEvidence(b32("x"), REF, 1))
+      .to.be.revertedWith("SendEvidence : no reference anchored for this agent");
+  });
+
+  it("ignores the reference sent by the SECaaS", async () => {
+    // First round: no peer is eligible yet, the SECaaS verifies robot A.
+    await am.connect(robotA).SendEvidence(b32("boot"), REF, 1);
+    await am.connect(secaas).ResolveAttestationSECaaS(b32("boot"), true);
+
+    await am.connect(robotB).SendEvidence(b32("id"), REF, 1);
+    await am.connect(secaas).SendRefSignature(b32("id"), b32("forged"));
+    const [, ref] = await am.GetAttestationSignatures(b32("id"), robotA.address);
+    expect(ref).to.equal(REF);
+  });
+});

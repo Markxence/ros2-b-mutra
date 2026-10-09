@@ -152,6 +152,7 @@ contract AttestationManagerV2 {
         Agent storage currentAgent = agent[msg.sender];
         require(currentAgent.registered, "SendEvidence : Agent is not registered");
         require(iterCount >= 1 && iterCount <= MAX_ITER_COUNT, "SendEvidence : iterCount out of range");
+        require(referenceOf[msg.sender] != bytes32(0), "SendEvidence : no reference anchored for this agent");
 
         MutualAttestation storage currentAttestation = attestation[id];
         currentAttestation.id = id;
@@ -195,7 +196,7 @@ contract AttestationManagerV2 {
             currentAttestation.verifier == secaas,
             "Attestation not ready for evaluation"
         );
-        return (currentAttestation.fresh_signature, currentAttestation.ref_signature, currentAttestation.iterCount);
+        return (currentAttestation.fresh_signature, referenceOf[currentAttestation.prover], currentAttestation.iterCount);
     }
 
     function GetAttestationInfo(bytes32 id) public view returns (address, address, AttestationResult, uint256) {
