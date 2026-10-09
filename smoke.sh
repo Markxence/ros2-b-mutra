@@ -3,7 +3,7 @@
 # Usage: ./smoke.sh lv|rr      (starts the stack, checks, stops it)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-CONTRACT="${1:?usage: ./smoke.sh lv|rr}"
+CONTRACT="${1:?usage: ./smoke.sh lv|rr|v2}"
 N=4
 
 count() { docker logs "$1" 2>&1 | grep -c "Prover.*Result: .*$2" || true; }

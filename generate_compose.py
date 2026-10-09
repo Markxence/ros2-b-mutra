@@ -40,6 +40,7 @@ REMOTE2_LIMIT = 128  # remote mode: robots 65..128 on remote2
 CONTRACT_TO_IMAGE = {
     "AttestationManagerRR": "attestation-sidecar:latest",
     "AttestationManagerLV": "attestation-sidecar:latest",
+    "AttestationManagerV2": "attestation-sidecar:latest",
 }
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

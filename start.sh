@@ -57,7 +57,7 @@ remote_compose_up() {
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [--robots N] [--remote] [--auto] [--export] [--startup] [--wait-tx]
-                        [--ssp N] [--cpu-limit X] [--contract rr|lv]
+                        [--ssp N] [--cpu-limit X] [--contract rr|lv|v2]
                         [--iterq K] [--no-bootstrap]
                         [--attest-gzserver]
                         [--no-wait-result]
@@ -75,7 +75,8 @@ Options:
   --ssp N        Attestation interval in milliseconds — sets ATTESTATION_INTERVAL_MS=N (default: 10000).
                  Use 0 for back-to-back measurements with no sleep (bounded only by CPU_LIMIT).
   --cpu-limit X  Sidecar CPU limit fraction — sets CPU_LIMIT=X in .env and compose files (default: 0.4)
-  --contract rr|lv  Smart contract variant (default: lv; rr = round-robin verifier election)
+  --contract rr|lv|v2  Smart contract variant (default: lv; rr = round-robin verifier election;
+                 v2 = lv with the references anchored on chain by admin keys)
   --iterq K      IterQ rolling-hash threshold: number of fresh measurements folded into
                  one on-chain attestation. K=1 = single-shot. Range: 1..10000 (default: 1)
   --no-cpu-limit Remove the CPU cgroup cap from sidecar containers entirely (uncapped).
@@ -203,8 +204,8 @@ while [[ $# -gt 0 ]]; do
     --no-cpu-limit) NO_CPU_LIMIT_VAL="TRUE"; shift ;;
     --contract)
       VARIANT_VAL="$2"
-      if [[ "$VARIANT_VAL" != "rr" && "$VARIANT_VAL" != "lv" ]]; then
-        echo "❌ --contract must be 'rr' or 'lv' (got '$VARIANT_VAL')"
+      if [[ "$VARIANT_VAL" != "rr" && "$VARIANT_VAL" != "lv" && "$VARIANT_VAL" != "v2" ]]; then
+        echo "❌ --contract must be 'rr', 'lv' or 'v2' (got '$VARIANT_VAL')"
         exit 1
       fi
       shift 2 ;;
@@ -313,8 +314,29 @@ fi
 # Map user-facing variant to internal contract name
 if [[ "$VARIANT_VAL" == "lv" ]]; then
   CONTRACT_VAL="AttestationManagerLV"
+elif [[ "$VARIANT_VAL" == "v2" ]]; then
+  CONTRACT_VAL="AttestationManagerV2"
 else
   CONTRACT_VAL="AttestationManagerRR"
+fi
+
+# V2 anchors the references on chain. They are written by admin keys that are
+# not the SECaaS key (validator1): here the accounts of validators 2 to 4,
+# two approvals out of three.
+ADMIN_NODES_DIR="$SCRIPT_DIR/blockchain/quorum-test-network/config/nodes"
+if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
+  if [[ "$DEPLOY_MODE" != "local" ]]; then
+    echo "❌ --contract v2 is only wired for local mode (reference anchoring is not run in remote mode)"
+    exit 1
+  fi
+  ADMINS=""
+  for v in 2 3 4; do
+    admin_addr="$(jq -er '"0x" + (.address | ltrimstr("0x"))' "$ADMIN_NODES_DIR/validator$v/accountKeystore")" \
+      || { echo "❌ cannot read the admin address of validator$v"; exit 1; }
+    ADMINS="${ADMINS:+$ADMINS,}$admin_addr"
+  done
+  export ADMINS
+  export ADMIN_THRESHOLD=2
 fi
 
 
@@ -630,6 +652,15 @@ else
 fi
 # ══════════════════════════════════════════════════════════════════════════════
 
+# V2 only: two admins approve each robot's reference on chain.
+anchor_references() {
+  [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]] || return 0
+  echo "⚓ Anchoring references on chain..."
+  "$SCRIPT_DIR/set_references.sh" "$N_ROBOTS_VAL" \
+    "$ADMIN_NODES_DIR/validator2/accountPrivateKey" \
+    "$ADMIN_NODES_DIR/validator3/accountPrivateKey"
+}
+
 # ── Reference measurements bootstrap ──────────────────────────────────────────
 # Capture the *real* triplet (robot_hash, sidecar_hash, combined_hash) from
 # robot1's sidecar, patch every ref-measurements/robot{i}.json with it, and
@@ -663,6 +694,7 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
     echo "⚠️  /digest didn't come up in time. Skipping bootstrap — attestations will FAIL on placeholder refs until you run bootstrap_ref_measurements.py manually."
   else
     python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" --sync-secaas \
+      && anchor_references \
       && echo "🧹 Resetting on-chain attestation chain..." \
       && curl -s -X POST "$SECAAS_URL/reset" | jq . \
       || echo "⚠️  Bootstrap failed — attestations may close as FAILURE."
