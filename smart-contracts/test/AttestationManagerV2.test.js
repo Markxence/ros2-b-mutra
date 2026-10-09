@@ -59,7 +59,16 @@ describe("AttestationManagerV2: anchored reference", function () {
   });
 });
 
-describe("AttestationManagerV2: the verifier gets the anchored reference", function () {
+// Brings a contract to the point where robot A is an eligible peer verifier:
+// A's first attestation has no peer available, so the SECaaS resolves it.
+async function makePeerVerifier(am, secaas, robotA, ref) {
+  await am.connect(robotA).SendEvidence(b32("boot"), ref, 1);
+  await am.connect(secaas).ResolveAttestationSECaaS(b32("boot"), true);
+}
+
+const gasOf = async (txPromise) => (await (await txPromise).wait()).gasUsed;
+
+describe("AttestationManagerV2: two-transaction cycle", function () {
   let secaas, a1, robotA, robotB, am;
   const REF = b32("ref");
 
@@ -81,14 +90,55 @@ describe("AttestationManagerV2: the verifier gets the anchored reference", funct
       .to.be.revertedWith("SendEvidence : no reference anchored for this agent");
   });
 
-  it("ignores the reference sent by the SECaaS", async () => {
-    // First round: no peer is eligible yet, the SECaaS verifies robot A.
-    await am.connect(robotA).SendEvidence(b32("boot"), REF, 1);
+  it("notifies the SECaaS only when it is the elected verifier", async () => {
+    await expect(am.connect(robotA).SendEvidence(b32("boot"), REF, 1))
+      .to.emit(am, "AttestationStarted").withArgs(b32("boot"), 1)
+      .and.not.to.emit(am, "ReadyForEvaluation");
     await am.connect(secaas).ResolveAttestationSECaaS(b32("boot"), true);
 
+    await expect(am.connect(robotB).SendEvidence(b32("id"), REF, 1))
+      .to.emit(am, "ReadyForEvaluation").withArgs(b32("id"))
+      .and.not.to.emit(am, "AttestationStarted");
+  });
+
+  it("closes a peer-verified cycle in two transactions, with the anchored reference", async () => {
+    await makePeerVerifier(am, secaas, robotA, REF);
+    await am.connect(robotB).SendEvidence(b32("id"), REF, 3);
+
+    const [fresh, ref, k] = await am.GetAttestationSignatures(b32("id"), robotA.address);
+    expect([fresh, ref, k]).to.deep.equal([REF, REF, 3n]);
+
+    await expect(am.connect(robotA).CloseAttestationProcess(b32("id"), true))
+      .to.emit(am, "AttestationCompleted").withArgs(b32("id"));
+    const [prover, verifier, result] = await am.GetAttestationInfo(b32("id"));
+    expect([prover, verifier, result]).to.deep.equal([robotB.address, robotA.address, 2n]);
+  });
+
+  it("uses a reference changed by the admin from the next cycle on", async () => {
+    await makePeerVerifier(am, secaas, robotA, REF);
+    await am.connect(a1).SetReference(robotB.address, b32("new"));
     await am.connect(robotB).SendEvidence(b32("id"), REF, 1);
-    await am.connect(secaas).SendRefSignature(b32("id"), b32("forged"));
     const [, ref] = await am.GetAttestationSignatures(b32("id"), robotA.address);
-    expect(ref).to.equal(REF);
+    expect(ref).to.equal(b32("new"));
+  });
+
+  it("costs less gas per peer-verified cycle than LV", async () => {
+    const LV = await ethers.getContractFactory("AttestationManagerLV", secaas);
+    const lv = await LV.deploy();
+    await lv.waitForDeployment();
+    for (const r of [robotA, robotB]) await lv.connect(r).RegisterAgent("r");
+    await makePeerVerifier(lv, secaas, robotA, REF);
+    await makePeerVerifier(am, secaas, robotA, REF);
+
+    const lvGas =
+      (await gasOf(lv.connect(robotB).SendEvidence(b32("id"), REF, 1))) +
+      (await gasOf(lv.connect(secaas).SendRefSignature(b32("id"), REF))) +
+      (await gasOf(lv.connect(robotA).CloseAttestationProcess(b32("id"), true)));
+    const v2Gas =
+      (await gasOf(am.connect(robotB).SendEvidence(b32("id"), REF, 1))) +
+      (await gasOf(am.connect(robotA).CloseAttestationProcess(b32("id"), true)));
+
+    console.log(`      gas per cycle: LV ${lvGas} (3 tx), V2 ${v2Gas} (2 tx), ${(100n * (lvGas - v2Gas)) / lvGas}% less`);
+    expect(v2Gas).to.be.lessThan(lvGas);
   });
 });

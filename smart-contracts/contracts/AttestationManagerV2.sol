@@ -17,7 +17,6 @@ contract AttestationManagerV2 {
         address verifier;
         address prover;
         bytes32 fresh_signature;
-        bytes32 ref_signature;
         AttestationState state;
         AttestationResult result;
         uint256 timestamp;
@@ -159,13 +158,19 @@ contract AttestationManagerV2 {
         currentAttestation.verifier = _assignVerifier(msg.sender);
         currentAttestation.prover = msg.sender;
         currentAttestation.fresh_signature = freshMeasurement;
-        currentAttestation.ref_signature = bytes32(0);
-        currentAttestation.state = AttestationState.Open;
         currentAttestation.result = AttestationResult.None;
         currentAttestation.timestamp = 0;
         currentAttestation.iterCount = iterCount;
 
-        emit AttestationStarted(id, iterCount);
+        // The reference is already on chain, so a peer verifier can evaluate
+        // at once. The SECaaS is only notified when it is the elected verifier.
+        if (currentAttestation.verifier == secaas) {
+            currentAttestation.state = AttestationState.Open;
+            emit AttestationStarted(id, iterCount);
+        } else {
+            currentAttestation.state = AttestationState.ReadyForEvaluation;
+            emit ReadyForEvaluation(id);
+        }
     }
 
     function GetProverAddress(bytes32 id, address callAddress) public view returns (address) {
@@ -173,19 +178,6 @@ contract AttestationManagerV2 {
         MutualAttestation storage currentAttestation = attestation[id];
         require(currentAttestation.state == AttestationState.Open, "Attestation is closed or not exists");
         return currentAttestation.prover;
-    }
-
-    function SendRefSignature(bytes32 id, bytes32 refMeasurement) public returns (bool) {
-        require(msg.sender == secaas, "Only the SECaaS can send the reference signature");
-
-        MutualAttestation storage currentAttestation = attestation[id];
-        require(currentAttestation.state == AttestationState.Open, "Invalid state for SECaaS response");
-
-        currentAttestation.ref_signature = refMeasurement;
-        currentAttestation.state = AttestationState.ReadyForEvaluation;
-
-        emit ReadyForEvaluation(id);
-        return true;
     }
 
     function GetAttestationSignatures(bytes32 id, address callAddress) public view returns (bytes32, bytes32, uint32) {
