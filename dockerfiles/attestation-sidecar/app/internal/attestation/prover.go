@@ -35,6 +35,7 @@ type ProverConfig struct {
 	TextSectionPrefix string // Hex string of first N bytes of .text section
 	Threshold         int    // Kept for config compatibility, but logic uses interval
 	IterQThreshold    uint32 // K = fresh measurements folded per on-chain attestation
+	Salt              *[32]byte // nil = unsalted measurements (contracts LV and RR)
 	AgentName         string
 	ExportEnabled     bool
 	ResultsDir        string
@@ -368,6 +369,9 @@ func RunProverLogicContinuousMode(
 			}
 			var m [32]byte
 			copy(m[:], raw)
+			if config.Salt != nil {
+				m = compute.SaltMeasurement(m, *config.Salt)
+			}
 
 			if i == 1 {
 				H = m

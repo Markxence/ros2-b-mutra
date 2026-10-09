@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,29 @@ func TestRollingHashHex_AcceptsPrefix(t *testing.T) {
 	b, _ := RollingHashHex("0x8c55173fa6a85295a83378cc84dc18baf8810ee21a0d0013b77d0fbd904ebffe", 3)
 	if a != b {
 		t.Errorf("0x prefix changed result: %s vs %s", a, b)
+	}
+}
+
+// Vector produced by bootstrap_ref_measurements.py (Python hmac/hashlib), so
+// the enrolled reference and the prover's value cannot drift apart.
+func TestSaltMeasurement_MatchesEnrollment(t *testing.T) {
+	salt, err := MeasurementSalt("0x" + strings.Repeat("11", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(salt[:]); got != "8721e98bfbe4b380ede56943250f828d702604dc83801d1107d203c87539069b" {
+		t.Fatalf("salt = %s", got)
+	}
+	var m [32]byte
+	for i := range m {
+		m[i] = 0x22
+	}
+	salted := SaltMeasurement(m, salt)
+	if got := hex.EncodeToString(salted[:]); got != "da248c6e878433597910d57eaf5dbc1168d9b923646b1203f7332e4527d81e3b" {
+		t.Fatalf("salted = %s", got)
+	}
+	if _, err := MeasurementSalt("0x1234"); err == nil {
+		t.Fatal("expected an error for a short key")
 	}
 }
 
