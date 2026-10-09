@@ -42,6 +42,11 @@ contract AttestationManagerV2 {
     mapping(bytes32 => MutualAttestation) private attestation;
     mapping(address => uint256) private indexOf;
 
+    // Admin keys, distinct from the SECaaS key. They will be the only ones
+    // allowed to write the on-chain references.
+    mapping(address => bool) public isAdmin;
+    uint256 public adminThreshold;
+
     event AgentRegistered(address agent);
     event AgentRemoved(address agent);
     event AttestationStarted(bytes32 id, uint32 iterCount);
@@ -49,11 +54,19 @@ contract AttestationManagerV2 {
     event AttestationCompleted(bytes32 id);
     event ChainReset();
 
-    constructor() {
+    constructor(address[] memory admins, uint256 threshold) {
         secaas = msg.sender;
         participants.push(secaas);
         indexOf[secaas] = 0;
         currentVerifier = secaas;
+
+        require(threshold >= 1 && threshold <= admins.length, "Invalid admin threshold");
+        for (uint i = 0; i < admins.length; i++) {
+            require(admins[i] != address(0) && admins[i] != secaas, "Admin must differ from the SECaaS");
+            require(!isAdmin[admins[i]], "Duplicate admin");
+            isAdmin[admins[i]] = true;
+        }
+        adminThreshold = threshold;
     }
 
     function ResetChain() public {
