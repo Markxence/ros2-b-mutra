@@ -16,6 +16,8 @@ Usage:
 Run AFTER start.sh has brought the fleet up.
 """
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -29,12 +31,24 @@ def fetch_digest(host: str, port: int, timeout: float = 10.0) -> dict:
     return json.loads(body)
 
 
-def patch_ref_file(path: str, digest: dict) -> None:
+def salted_reference(combined_hash: str, private_key: str) -> str:
+    """SHA256(h_ref || salt), salt = HMAC-SHA256(agent key, fixed label).
+
+    Must match compute.MeasurementSalt / SaltMeasurement in the sidecar.
+    """
+    key = bytes.fromhex(private_key.removeprefix("0x"))
+    salt = hmac.new(key, b"d-mutra/measurement-salt", hashlib.sha256).digest()
+    return hashlib.sha256(bytes.fromhex(combined_hash) + salt).hexdigest()
+
+
+def patch_ref_file(path: str, digest: dict, salted: bool) -> None:
     with open(path, "r") as f:
         data = json.load(f)
     data["robot_hash"] = digest["robot_hash"]
     data["attestation_sidecar_hash"] = digest.get("attestation_sidecar_hash", "")
     data["combined_hash"] = digest["combined_hash"]
+    if salted:
+        data["combined_hash"] = salted_reference(digest["combined_hash"], data["private_key"])
     with open(path, "w") as f:
         json.dump(data, f, indent=4)
 
@@ -60,6 +74,8 @@ def main() -> int:
                    help="Port = base + robot_index (default: 8000 -> robot1=8001)")
     p.add_argument("--ref-dir", default="./ref-measurements",
                    help="Directory holding robot{i}.json files (default: ./ref-measurements)")
+    p.add_argument("--salted", action="store_true",
+                   help="Store SHA256(h_ref || salt_agent) as the reference (contract V2)")
     p.add_argument("--sync-secaas", action="store_true",
                    help="After patching, POST /sync-agents to SECaaS")
     p.add_argument("--secaas-url", default="http://localhost:8000",
@@ -90,7 +106,7 @@ def main() -> int:
         if not os.path.isfile(path):
             print(f"   skip (missing): {path}")
             continue
-        patch_ref_file(path, digest)
+        patch_ref_file(path, digest, args.salted)
         patched += 1
     print(f"-> Patched {patched}/{args.robots} files in {args.ref_dir}")
 
