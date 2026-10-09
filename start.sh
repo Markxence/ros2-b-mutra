@@ -339,6 +339,15 @@ if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
   export ADMIN_THRESHOLD=2
 fi
 
+# V2 stores SHA256(h_ref || salt_agent) on chain, and the sidecars send the
+# salted measurement, so the ledger does not reveal which binary a robot runs.
+SALT_MEASUREMENT_VAL="FALSE"
+BOOTSTRAP_FLAGS=()
+if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
+  SALT_MEASUREMENT_VAL="TRUE"
+  BOOTSTRAP_FLAGS=(--salted)
+fi
+
 
 # Validate remote2 requirements before proceeding
 if [[ "$DEPLOY_MODE" == "remote" ]] && (( N_ROBOTS_VAL > REMOTE1_LIMIT )) && [[ -z "$REMOTE2_HOST" ]]; then
@@ -389,6 +398,7 @@ else
   upsert_env "CPU_LIMIT" "$CPU_LIMIT_VAL"
 fi
 upsert_env "ITERQ_THRESHOLD"           "$ITERQ_VAL"
+upsert_env "SALT_MEASUREMENT"          "$SALT_MEASUREMENT_VAL"
 upsert_env "GAZEBO_WORLD"              "$WORLD_VAL"
 upsert_env "ENABLE_NAV2"              "$NAV2_VAL"
 upsert_env "ENABLE_FORMATION"          "$FORMATION_VAL"
@@ -693,7 +703,7 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
   if (( attempt > max_attempts )); then
     echo "⚠️  /digest didn't come up in time. Skipping bootstrap — attestations will FAIL on placeholder refs until you run bootstrap_ref_measurements.py manually."
   else
-    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" --sync-secaas \
+    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" --sync-secaas "${BOOTSTRAP_FLAGS[@]}" \
       && anchor_references \
       && echo "🧹 Resetting on-chain attestation chain..." \
       && curl -s -X POST "$SECAAS_URL/reset" | jq . \
