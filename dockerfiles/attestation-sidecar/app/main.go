@@ -458,6 +458,7 @@ func main() {
 	// results_dir change also clears ResultsFile so the next /start picks a fresh run number.
 	// one_shot change resets lastResult so /status returns "idle" cleanly.
 	// attestation_interval_ms takes effect on the next measurement cycle (updates ATTESTATION_INTERVAL_MS env var).
+	// attestation_interval_mode (fixed or exp) takes effect on the next wait (updates ATTESTATION_INTERVAL_MODE env var).
 	// iterq_threshold takes effect on the next measurement cycle (updates appState.Config.IterQThreshold in-process).
 	r.POST("/config", func(c *gin.Context) {
 		var body struct {
@@ -466,14 +467,15 @@ func main() {
 			OneShot                *bool   `json:"one_shot"`
 			ExportEnabled          *bool   `json:"export_enabled"`
 			AttestationIntervalMs  *int    `json:"attestation_interval_ms"`
+			AttestationIntervalMode *string `json:"attestation_interval_mode"`
 			IterQThreshold         *int    `json:"iterq_threshold"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(400, gin.H{"error": "invalid body"})
 			return
 		}
-		if body.ResultsDir == nil && body.ResultsFile == nil && body.OneShot == nil && body.ExportEnabled == nil && body.AttestationIntervalMs == nil && body.IterQThreshold == nil {
-			c.JSON(400, gin.H{"error": "no recognized fields: use results_dir, results_file, one_shot, export_enabled, attestation_interval_ms, iterq_threshold"})
+		if body.ResultsDir == nil && body.ResultsFile == nil && body.OneShot == nil && body.ExportEnabled == nil && body.AttestationIntervalMs == nil && body.AttestationIntervalMode == nil && body.IterQThreshold == nil {
+			c.JSON(400, gin.H{"error": "no recognized fields: use results_dir, results_file, one_shot, export_enabled, attestation_interval_ms, attestation_interval_mode, iterq_threshold"})
 			return
 		}
 
@@ -529,6 +531,16 @@ func main() {
 			os.Setenv("ATTESTATION_INTERVAL_MS", strconv.Itoa(ms))
 			applied["attestation_interval_ms"] = ms
 			logger.Info("Attestation interval set to: %dms", ms)
+		}
+
+		if body.AttestationIntervalMode != nil {
+			if err := attestation.CheckIntervalMode(*body.AttestationIntervalMode); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			os.Setenv("ATTESTATION_INTERVAL_MODE", *body.AttestationIntervalMode)
+			applied["attestation_interval_mode"] = *body.AttestationIntervalMode
+			logger.Info("Measurement delay mode set to: %s", *body.AttestationIntervalMode)
 		}
 
 		if body.IterQThreshold != nil {
