@@ -8,6 +8,10 @@
 # Read-modify-write of /proc/<pid>/mem from inside the sidecar container,
 # which has CAP_SYS_PTRACE and shares the PID namespace with its robot.
 # The change is in-memory only; restart the affected container to undo.
+# With --restore-after MS, the original bytes are saved first and written back
+# MS milliseconds after the change, as in a TOCTOU attack (tamper, run,
+# restore); the script returns after the restore. Both moments are printed in
+# epoch milliseconds.
 #
 # Writes N bytes of a per-target FILL value at the given offset. Defaults:
 #   legacy targets (state_publisher/dummy/sidecar): 1 byte of 0x90 (NOP).
@@ -25,6 +29,7 @@
 #
 # Usage:
 #   ./tools/tamper.sh <robot> [--target T] [--offset 0xN] [--nops K] [--fill \\OCTAL]
+#                     [--restore-after MS]
 #
 # Targets:
 #   state_publisher (default)  - robot_state_publisher in Gazebo robots
@@ -39,6 +44,7 @@
 #   ./tools/tamper.sh robot3 --target mission_agent          # freeze robot3's mission
 #   ./tools/tamper.sh robot1 --target sidecar
 #   ./tools/tamper.sh robot2 --target dummy --offset 0x6000
+#   ./tools/tamper.sh robot1 --restore-after 2500            # restore after 2.5 s
 #
 # Exit code: 0 if the bytes were written, 1 on any error.
 
@@ -49,6 +55,7 @@ OFFSET=""
 NOPS=""
 FILL=""        # printf octal escape of the byte to write (e.g. \220=NOP, \303=RET)
 ROBOT=""
+RESTORE_MS=""  # empty: no restore
 
 usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -60,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --offset) OFFSET="$2"; shift 2 ;;
     --nops) NOPS="$2"; shift 2 ;;
     --fill) FILL="$2"; shift 2 ;;
+    --restore-after) RESTORE_MS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "unknown flag: $1" >&2; usage >&2; exit 1 ;;
     *)
@@ -138,7 +146,7 @@ case "$TARGET" in
     DEFAULT_FILL="\220"            # 0x90 NOP
     ;;
   sidecar)
-    PROC_GREP=""                   # located via pgrep, not PID 1 (PID 1 is the shell entrypoint)
+    PROC_GREP="attestation-sidecar" # located via pgrep, not PID 1 (PID 1 is the shell entrypoint)
     DEFAULT_OFFSET="0x100000"      # 1 MB into the ~14 MB .text
     DEFAULT_NOPS="1"
     DEFAULT_FILL="\220"            # 0x90 NOP
@@ -152,6 +160,11 @@ FILL="${FILL:-$DEFAULT_FILL}"
 if ! [[ "$NOPS" =~ ^[1-9][0-9]*$ ]]; then
   echo "--nops must be a positive integer (got '$NOPS')" >&2; exit 1
 fi
+RESTORE_S=""
+if [[ -n "$RESTORE_MS" ]]; then
+  [[ "$RESTORE_MS" =~ ^[0-9]+$ ]] || { echo "--restore-after must be a number of milliseconds (got '$RESTORE_MS')" >&2; exit 1; }
+  RESTORE_S=$(printf '%d.%03d' $((RESTORE_MS / 1000)) $((RESTORE_MS % 1000)))
+fi
 
 echo "── Tampering ───────────────────────────────────────────"
 echo "  robot:   $ROBOT (container $SIDECAR)"
@@ -160,29 +173,25 @@ echo "  offset:  $OFFSET"
 echo "  bytes:   $NOPS byte(s) of fill '$FILL'"
 echo
 
-if [[ "$TARGET" == "sidecar" ]]; then
-  docker exec -e TAMPER_OFFSET="$OFFSET" -e TAMPER_NBYTES="$NOPS" -e TAMPER_FILL="$FILL" "$SIDECAR" sh -c '
-    PID=$(pgrep -f "attestation-sidecar" | head -1)
-    [ -z "$PID" ] && { echo "attestation-sidecar process not found in PID namespace"; exit 1; }
-    ADDR=$(grep "r-xp.*attestation-sidecar" /proc/$PID/maps | head -1 | cut -d- -f1)
-    [ -z "$ADDR" ] && { echo "no r-xp mapping for attestation-sidecar in /proc/$PID/maps"; exit 1; }
-    i=0; while [ $i -lt "$TAMPER_NBYTES" ]; do printf "$TAMPER_FILL"; i=$((i+1)); done \
-      | dd of=/proc/$PID/mem bs=1 count="$TAMPER_NBYTES" \
-        seek=$(( 0x$ADDR + TAMPER_OFFSET )) conv=notrunc 2>/dev/null
-    echo "  tampered PID=$PID (attestation-sidecar): $TAMPER_NBYTES byte(s) at 0x$ADDR + $TAMPER_OFFSET"
-  ' || { echo "tampering failed" >&2; exit 1; }
-else
-  docker exec -e TAMPER_OFFSET="$OFFSET" -e TAMPER_PROC="$PROC_GREP" -e TAMPER_NBYTES="$NOPS" -e TAMPER_FILL="$FILL" "$SIDECAR" sh -c '
-    PID=$(pgrep -f "$TAMPER_PROC" | head -1)
-    [ -z "$PID" ] && { echo "$TAMPER_PROC not found in PID namespace"; exit 1; }
-    ADDR=$(grep "r-xp.*$TAMPER_PROC" /proc/$PID/maps | head -1 | cut -d- -f1)
-    [ -z "$ADDR" ] && { echo "no r-xp mapping for $TAMPER_PROC in /proc/$PID/maps"; exit 1; }
-    i=0; while [ $i -lt "$TAMPER_NBYTES" ]; do printf "$TAMPER_FILL"; i=$((i+1)); done \
-      | dd of=/proc/$PID/mem bs=1 count="$TAMPER_NBYTES" \
-        seek=$(( 0x$ADDR + TAMPER_OFFSET )) conv=notrunc 2>/dev/null
-    echo "  tampered PID=$PID ($TAMPER_PROC): $TAMPER_NBYTES byte(s) at 0x$ADDR + $TAMPER_OFFSET"
-  ' || { echo "tampering failed" >&2; exit 1; }
-fi
+docker exec -e TAMPER_OFFSET="$OFFSET" -e TAMPER_PROC="$PROC_GREP" -e TAMPER_NBYTES="$NOPS" -e TAMPER_FILL="$FILL" \
+  -e TAMPER_RESTORE_S="$RESTORE_S" "$SIDECAR" sh -c '
+  PID=$(pgrep -f "$TAMPER_PROC" | head -1)
+  [ -z "$PID" ] && { echo "$TAMPER_PROC not found in PID namespace"; exit 1; }
+  ADDR=$(grep "r-xp.*$TAMPER_PROC" /proc/$PID/maps | head -1 | cut -d- -f1)
+  [ -z "$ADDR" ] && { echo "no r-xp mapping for $TAMPER_PROC in /proc/$PID/maps"; exit 1; }
+  SEEK=$(( 0x$ADDR + TAMPER_OFFSET ))
+  ORIG=$(mktemp)
+  dd if=/proc/$PID/mem of="$ORIG" bs=1 count="$TAMPER_NBYTES" skip=$SEEK 2>/dev/null || { echo "cannot save the original bytes"; exit 1; }
+  i=0; while [ $i -lt "$TAMPER_NBYTES" ]; do printf "$TAMPER_FILL"; i=$((i+1)); done \
+    | dd of=/proc/$PID/mem bs=1 count="$TAMPER_NBYTES" seek=$SEEK conv=notrunc 2>/dev/null
+  echo "  tampered PID=$PID ($TAMPER_PROC): $TAMPER_NBYTES byte(s) at 0x$ADDR + $TAMPER_OFFSET, at $(date +%s%3N) ms"
+  if [ -n "$TAMPER_RESTORE_S" ]; then
+    sleep "$TAMPER_RESTORE_S"
+    dd if="$ORIG" of=/proc/$PID/mem bs=1 count="$TAMPER_NBYTES" seek=$SEEK conv=notrunc 2>/dev/null || { echo "restore failed"; exit 1; }
+    echo "  restored the original bytes at $(date +%s%3N) ms"
+  fi
+  rm -f "$ORIG"
+' || { echo "tampering failed" >&2; exit 1; }
 
 echo
-echo "Recovery: docker restart $ROBOT       (reload the binary fresh)"
+[[ -n "$RESTORE_MS" ]] || echo "Recovery: docker restart $ROBOT       (reload the binary fresh)"
