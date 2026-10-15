@@ -399,6 +399,8 @@ func RunProverLogicContinuousMode(
 
 		batchStartTs := utils.NowMs()
 		batchStartP := utils.PerfNs()
+		attestationID := utils.GenerateAttestationID()
+		logPrefix := fmt.Sprintf("[Prover-%s]", utils.ShortAttID(attestationID, 4))
 
 		// Fold K fresh measurements into a rolling-hash accumulator.
 		var H [32]byte
@@ -410,10 +412,11 @@ func RunProverLogicContinuousMode(
 				case <-stopCh:
 					logger.Info("Attestation process stopped")
 					return
-				case <-time.After(attestationInterval()):
+				case <-time.After(measurementDelay()):
 				}
 			}
 
+			logger.Info("%s Measurement %d/%d at %d ms", logPrefix, i, K, utils.NowMs())
 			combined, robotHash, sidecarHash, libsHash, err := measureCombinedOnce(config)
 			if err != nil {
 				if compute.IsComputeHashError(err) {
@@ -477,8 +480,6 @@ func RunProverLogicContinuousMode(
 			"timestamp":       float64(time.Now().Unix()),
 		})
 
-		attestationID := utils.GenerateAttestationID()
-
 		wg.Add(1)
 		go func(attID, evidence string, startTs, startP int64) {
 			defer wg.Done()
@@ -504,7 +505,7 @@ func RunProverLogicContinuousMode(
 		// SendEvidence submissions stay spaced enough to avoid prover-account
 		// nonce races. For SSP >= 500ms the cycle period is precisely the SSP,
 		// so detection latency models can use P = SSP without a +0.5s constant.
-		sleep := attestationInterval()
+		sleep := measurementDelay()
 		if sleep < 500*time.Millisecond {
 			sleep = 500 * time.Millisecond
 		}
@@ -535,6 +536,16 @@ func attestationInterval() time.Duration {
 		ms = 0
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// measurementDelay is the wait before a measurement: the SSP in fixed mode,
+// a draw of mean SSP in exp mode. Like the SSP, the mode is read on every
+// call, so that POST /config can change it between two batches.
+func measurementDelay() time.Duration {
+	if os.Getenv("ATTESTATION_INTERVAL_MODE") == "exp" {
+		return nextInterval(attestationInterval())
+	}
+	return attestationInterval()
 }
 
 // proverPollInterval is the sleep between successive RPC state-check calls
