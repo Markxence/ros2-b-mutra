@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # Smoke test: 4 robots attest successfully, verify each other, then a tampered
-# robot is detected. Usage: ./smoke.sh lv|rr|v2|v3 [--remote]   (starts the stack, checks, stops it)
+# robot is detected. Usage: ./smoke.sh lv|rr|v2|v3 [fixed|exp] [--remote]   (starts the stack, checks, stops it)
+# fixed|exp: the measurement delay mode, fixed by default.
 # --remote: run from the core; the robots and their sidecars are on REMOTE1_HOST
 # (set in the environment, as for start.sh), reached over SSH.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-USAGE="usage: ./smoke.sh lv|rr|v2|v3 [--remote]"
+USAGE="usage: ./smoke.sh lv|rr|v2|v3 [fixed|exp] [--remote]"
 CONTRACT="${1:?$USAGE}"
 N=4
+MODE=fixed
 REMOTE=()
 SIDECAR_HOST=localhost
-case "${2:-}" in
-  "") ;;
-  --remote)
-    : "${REMOTE1_HOST:?--remote needs REMOTE1_HOST}" "${REMOTE1_USER:?--remote needs REMOTE1_USER}"
-    REMOTE=(ssh "$REMOTE1_USER@$REMOTE1_HOST")
-    SIDECAR_HOST="$REMOTE1_HOST" ;;
-  *) echo "$USAGE" >&2; exit 1 ;;
-esac
+for arg in "${@:2}"; do
+  case "$arg" in
+    fixed|exp) MODE="$arg" ;;
+    --remote)
+      : "${REMOTE1_HOST:?--remote needs REMOTE1_HOST}" "${REMOTE1_USER:?--remote needs REMOTE1_USER}"
+      REMOTE=(ssh "$REMOTE1_USER@$REMOTE1_HOST")
+      SIDECAR_HOST="$REMOTE1_HOST" ;;
+    *) echo "$USAGE" >&2; exit 1 ;;
+  esac
+done
 
 # Sidecar containers run on the robot host; the SECaaS and its database stay local.
 sidecar_logs() { "${REMOTE[@]}" docker logs "$1" 2>&1; }
@@ -35,7 +39,7 @@ no_failure() {  # no_failure <first robot> <message suffix>
 }
 
 trap "./stop.sh >/dev/null 2>&1" EXIT
-./start.sh --robots $N --contract "$CONTRACT" --ssp 10000 --iterq 1 ${REMOTE:+--remote} >/dev/null
+./start.sh --robots $N --contract "$CONTRACT" --ssp 10000 --ssp-mode "$MODE" --iterq 1 ${REMOTE:+--remote} >/dev/null
 # V2 and V3 anchor the references on chain: the SECaaS must not need its
 # database to verify, so it is made wrong before any cycle runs.
 if [[ "$CONTRACT" == v[23] ]]; then
@@ -87,7 +91,8 @@ if [[ ${#REMOTE[@]} -gt 0 ]]; then
 else
   ./tools/tamper.sh robot1 >/dev/null
 fi
-wait_for 60 robot1_failed || { echo "FAIL: tampering of robot1 not detected within 60 s"; exit 1; }
+# 120 s: in exp mode a single draw exceeds 60 s once in 400 at SSP 10 s.
+wait_for 120 robot1_failed || { echo "FAIL: tampering of robot1 not detected within 120 s"; exit 1; }
 no_failure 2 "reported a failure although only robot1 was tampered"
 if [[ "$CONTRACT" == v3 ]]; then
   votes_against=0
