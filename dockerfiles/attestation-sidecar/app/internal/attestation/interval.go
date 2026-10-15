@@ -3,6 +3,7 @@ package attestation
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"time"
 )
@@ -19,4 +20,14 @@ func nextInterval(mean time.Duration) time.Duration {
 	// u is uniform in (0, 1]: 53 random bits plus one, so log(u) is finite.
 	u := float64(binary.BigEndian.Uint64(b[:])>>11+1) / (1 << 53)
 	return time.Duration(-math.Log(u) * float64(mean))
+}
+
+// CheckIntervalMode accepts "fixed" (the delay is the SSP) and "exp" (the
+// delay is drawn by nextInterval with the SSP as mean). There is no default,
+// so that every run states which one it used.
+func CheckIntervalMode(mode string) error {
+	if mode != "fixed" && mode != "exp" {
+		return fmt.Errorf("ATTESTATION_INTERVAL_MODE must be fixed or exp, got %q", mode)
+	}
+	return nil
 }

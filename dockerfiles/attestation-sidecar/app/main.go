@@ -263,6 +263,12 @@ func main() {
 		logger.Warn("FORCE_VERDICT is set: this agent votes %v on every cycle without comparing (experiment only)", *cfg.ForceVerdict)
 	}
 
+	if err := attestation.CheckIntervalMode(os.Getenv("ATTESTATION_INTERVAL_MODE")); err != nil {
+		logger.Error("%v", err)
+		os.Exit(1)
+	}
+	logger.Info("Measurement delay mode = %s", os.Getenv("ATTESTATION_INTERVAL_MODE"))
+
 	// ---------------------------------------------------------
 	// 1.5 Compute Self-Integrity Info (Auto-Detection)
 	// ---------------------------------------------------------
