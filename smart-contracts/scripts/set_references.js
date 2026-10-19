@@ -1,4 +1,4 @@
-// Anchors the reference of each robot in AttestationManagerV2.
+// Anchors the reference of each robot in AttestationManagerV2 or V3 (CONTRACT_NAME).
 // The signer (PRIVATE_KEY) must be an admin of the contract. Run once per
 // admin key: the contract applies a reference once enough admins approved it.
 const { ethers } = require("hardhat");
@@ -6,13 +6,13 @@ const fs = require("fs");
 const path = require("path");
 
 async function main() {
-  const { N_ROBOTS, REF_DIR } = process.env;
-  if (!N_ROBOTS || !REF_DIR) throw new Error("N_ROBOTS and REF_DIR are required");
+  const { CONTRACT_NAME, N_ROBOTS, REF_DIR } = process.env;
+  if (!CONTRACT_NAME || !N_ROBOTS || !REF_DIR) throw new Error("CONTRACT_NAME, N_ROBOTS and REF_DIR are required");
 
-  const deployment = path.join(__dirname, "..", "deployments", `${hre.network.name}-AttestationManagerV2.json`);
+  const deployment = path.join(__dirname, "..", "deployments", `${hre.network.name}-${CONTRACT_NAME}.json`);
   const { address } = JSON.parse(fs.readFileSync(deployment));
   const [admin] = await ethers.getSigners();
-  const am = await ethers.getContractAt("AttestationManagerV2", address, admin);
+  const am = await ethers.getContractAt(CONTRACT_NAME, address, admin);
 
   const txs = [];
   for (let i = 1; i <= parseInt(N_ROBOTS); i++) {

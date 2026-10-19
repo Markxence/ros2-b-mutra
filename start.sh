@@ -58,7 +58,8 @@ remote_compose_up() {
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [--robots N] [--remote] [--auto] [--export] [--startup] [--wait-tx]
-                        [--ssp N] [--cpu-limit X] [--contract rr|lv|v2]
+                        [--ssp N] [--cpu-limit X] [--contract rr|lv|v2|v3]
+                        [--jury N] [--quorum T]
                         [--iterq K] [--no-bootstrap]
                         [--attest-gzserver]
                         [--no-wait-result]
@@ -76,8 +77,11 @@ Options:
   --ssp N        Attestation interval in milliseconds — sets ATTESTATION_INTERVAL_MS=N (default: 10000).
                  Use 0 for back-to-back measurements with no sleep (bounded only by CPU_LIMIT).
   --cpu-limit X  Sidecar CPU limit fraction — sets CPU_LIMIT=X in .env and compose files (default: 0.4)
-  --contract rr|lv|v2  Smart contract variant (default: lv; rr = round-robin verifier election;
-                 v2 = lv with the references anchored on chain by admin keys)
+  --contract rr|lv|v2|v3  Smart contract variant (default: lv; rr = round-robin verifier election;
+                 v2 = lv with the references anchored on chain by admin keys;
+                 v3 = v2 with a jury of verifiers)
+  --jury N       v3 only: jurors drawn per cycle (default: 3)
+  --quorum T     v3 only: matching votes that close a cycle, 1..N (default: 2)
   --iterq K      IterQ rolling-hash threshold: number of fresh measurements folded into
                  one on-chain attestation. K=1 = single-shot. Range: 1..10000 (default: 1)
   --no-cpu-limit Remove the CPU cgroup cap from sidecar containers entirely (uncapped).
@@ -134,6 +138,8 @@ NO_CPU_LIMIT_VAL="FALSE"
 CPU_LIMIT_EXPLICIT="FALSE"
 VARIANT_VAL="lv"
 CONTRACT_VAL="AttestationManagerLV"
+JURY_VAL="3"
+QUORUM_VAL="2"
 ITERQ_VAL="1"
 BOOTSTRAP_REFS="TRUE"
 WAIT_RESULT_VAL="TRUE"
@@ -205,10 +211,14 @@ while [[ $# -gt 0 ]]; do
     --no-cpu-limit) NO_CPU_LIMIT_VAL="TRUE"; shift ;;
     --contract)
       VARIANT_VAL="$2"
-      if [[ "$VARIANT_VAL" != "rr" && "$VARIANT_VAL" != "lv" && "$VARIANT_VAL" != "v2" ]]; then
-        echo "❌ --contract must be 'rr', 'lv' or 'v2' (got '$VARIANT_VAL')"
+      if [[ "$VARIANT_VAL" != "rr" && "$VARIANT_VAL" != "lv" && "$VARIANT_VAL" != "v2" && "$VARIANT_VAL" != "v3" ]]; then
+        echo "❌ --contract must be 'rr', 'lv', 'v2' or 'v3' (got '$VARIANT_VAL')"
         exit 1
       fi
+      shift 2 ;;
+    --jury|--quorum)
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "❌ $1 must be a positive integer (got '$2')"; exit 1; }
+      if [[ "$1" == "--jury" ]]; then JURY_VAL="$2"; else QUORUM_VAL="$2"; fi
       shift 2 ;;
     --iterq)
       ITERQ_VAL="$2"
@@ -317,15 +327,17 @@ if [[ "$VARIANT_VAL" == "lv" ]]; then
   CONTRACT_VAL="AttestationManagerLV"
 elif [[ "$VARIANT_VAL" == "v2" ]]; then
   CONTRACT_VAL="AttestationManagerV2"
+elif [[ "$VARIANT_VAL" == "v3" ]]; then
+  CONTRACT_VAL="AttestationManagerV3"
 else
   CONTRACT_VAL="AttestationManagerRR"
 fi
 
-# V2 anchors the references on chain. They are written by admin keys that are
+# V2 and V3 anchor the references on chain. They are written by admin keys that are
 # not the SECaaS key (validator1): here the accounts of validators 2 to 4,
 # two approvals out of three.
 ADMIN_NODES_DIR="$SCRIPT_DIR/blockchain/quorum-test-network/config/nodes"
-if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
+if [[ "$CONTRACT_VAL" == AttestationManagerV[23] ]]; then
   ADMINS=""
   for v in 2 3 4; do
     admin_addr="$(jq -er '"0x" + (.address | ltrimstr("0x"))' "$ADMIN_NODES_DIR/validator$v/accountKeystore")" \
@@ -335,12 +347,17 @@ if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
   export ADMINS
   export ADMIN_THRESHOLD=2
 fi
+# V3: the jury closes a cycle with QUORUM_VAL matching votes out of JURY_VAL;
+# after 5 blocks (10 s) without a close, the cycle goes to the SECaaS.
+if [[ "$CONTRACT_VAL" == "AttestationManagerV3" ]]; then
+  export JURY_SIZE="$JURY_VAL" JURY_THRESHOLD="$QUORUM_VAL" JURY_TIMEOUT_BLOCKS=5
+fi
 
-# V2 stores SHA256(h_ref || salt_agent) on chain, and the sidecars send the
+# V2 and V3 store SHA256(h_ref || salt_agent) on chain, and the sidecars send the
 # salted measurement, so the ledger does not reveal which binary a robot runs.
 SALT_MEASUREMENT_VAL="FALSE"
 BOOTSTRAP_FLAGS=()
-if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
+if [[ "$CONTRACT_VAL" == AttestationManagerV[23] ]]; then
   SALT_MEASUREMENT_VAL="TRUE"
   BOOTSTRAP_FLAGS=(--salted)
 fi
@@ -659,11 +676,11 @@ else
 fi
 # ══════════════════════════════════════════════════════════════════════════════
 
-# V2 only: two admins approve each robot's reference on chain.
+# V2 and V3 only: two admins approve each robot's reference on chain.
 anchor_references() {
-  [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]] || return 0
+  [[ "$CONTRACT_VAL" == AttestationManagerV[23] ]] || return 0
   echo "⚓ Anchoring references on chain..."
-  "$SCRIPT_DIR/set_references.sh" "$N_ROBOTS_VAL" \
+  "$SCRIPT_DIR/set_references.sh" "$CONTRACT_VAL" "$N_ROBOTS_VAL" \
     "$ADMIN_NODES_DIR/validator2/accountPrivateKey" \
     "$ADMIN_NODES_DIR/validator3/accountPrivateKey"
 }

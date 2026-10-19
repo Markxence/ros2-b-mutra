@@ -16,14 +16,23 @@ async function main() {
     const vrp = parseInt(process.env.VRP || "1");
     console.log(`VRP        : ${vrp}`);
     contract = await factory.deploy(vrp, { gasPrice: 0 });
-  } else if (CONTRACT_NAME === "AttestationManagerV2") {
+  } else if (CONTRACT_NAME === "AttestationManagerV2" || CONTRACT_NAME === "AttestationManagerV3") {
     // Admin keys that may write the on-chain references. Never the deployer (SECaaS).
     const { ADMINS, ADMIN_THRESHOLD } = process.env;
     if (!ADMINS || !ADMIN_THRESHOLD) {
-      throw new Error("AttestationManagerV2 requires ADMINS (comma-separated addresses) and ADMIN_THRESHOLD");
+      throw new Error(`${CONTRACT_NAME} requires ADMINS (comma-separated addresses) and ADMIN_THRESHOLD`);
     }
     console.log(`Admins     : ${ADMINS} (threshold ${ADMIN_THRESHOLD})`);
-    contract = await factory.deploy(ADMINS.split(","), parseInt(ADMIN_THRESHOLD), { gasPrice: 0 });
+    const args = [ADMINS.split(","), parseInt(ADMIN_THRESHOLD)];
+    if (CONTRACT_NAME === "AttestationManagerV3") {
+      const { JURY_SIZE, JURY_THRESHOLD, JURY_TIMEOUT_BLOCKS } = process.env;
+      if (!JURY_SIZE || !JURY_THRESHOLD || !JURY_TIMEOUT_BLOCKS) {
+        throw new Error("AttestationManagerV3 requires JURY_SIZE, JURY_THRESHOLD and JURY_TIMEOUT_BLOCKS");
+      }
+      console.log(`Jury       : ${JURY_THRESHOLD} of ${JURY_SIZE}, timeout ${JURY_TIMEOUT_BLOCKS} blocks`);
+      args.push(parseInt(JURY_SIZE), parseInt(JURY_THRESHOLD), parseInt(JURY_TIMEOUT_BLOCKS));
+    }
+    contract = await factory.deploy(...args, { gasPrice: 0 });
   } else {
     contract = await factory.deploy({ gasPrice: 0 });
   }

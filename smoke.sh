@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Smoke test: 4 robots attest successfully, verify each other, then a tampered
-# robot is detected. Usage: ./smoke.sh lv|rr|v2   (starts the stack, checks, stops it)
+# robot is detected. Usage: ./smoke.sh lv|rr|v2|v3   (starts the stack, checks, stops it)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-CONTRACT="${1:?usage: ./smoke.sh lv|rr|v2}"
+CONTRACT="${1:?usage: ./smoke.sh lv|rr|v2|v3}"
 N=4
 
 count() { docker logs "$1" 2>&1 | grep -c "Prover.*Result: .*$2" || true; }
@@ -38,7 +38,7 @@ wait_for 120 peer_verified || { echo "FAIL: not every robot was verified by a pe
 no_failure 1 "failed attestation under peer verification"
 echo "ok: every robot was verified by a peer"
 
-if [[ "$CONTRACT" == "v2" ]]; then
+if [[ "$CONTRACT" == v[23] ]]; then
   (( $(docker logs secaas 2>&1 | grep -c "ref. measurement sent" || true) == 0 )) \
     || { echo "FAIL: the SECaaS still supplied a reference"; exit 1; }
   echo "ok: the SECaaS supplied no reference"
