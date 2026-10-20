@@ -39,10 +39,6 @@ contract AttestationManagerV3 {
     address private secaas;
     address[] private participants;
 
-    // Root-of-trust verifier: always the last successfully verified agent.
-    // Initialised to secaas (default fallback when no agent has been verified yet).
-    address private currentVerifier;
-
     mapping(address => Agent) private agent;
     mapping(bytes32 => MutualAttestation) private attestation;
     mapping(address => uint256) private indexOf;
@@ -84,7 +80,6 @@ contract AttestationManagerV3 {
         secaas = msg.sender;
         participants.push(secaas);
         indexOf[secaas] = 0;
-        currentVerifier = secaas;
 
         require(threshold >= 1 && threshold <= admins.length, "Invalid admin threshold");
         for (uint i = 0; i < admins.length; i++) {
@@ -124,7 +119,6 @@ contract AttestationManagerV3 {
 
     function ResetChain() public {
         require(msg.sender == secaas, "Only the SECaaS can reset the chain");
-        currentVerifier = secaas;
         while (eligible.length > 0) {
             delete eligibleSlot[eligible[eligible.length - 1]];
             eligible.pop();
@@ -158,10 +152,7 @@ contract AttestationManagerV3 {
     // ponytail: rejection loop, fine for a jury of a few agents; switch to a
     // partial Fisher-Yates if jurySize gets close to the number of agents.
     function DrawJury(bytes32 seed, address prover) public view returns (address[] memory jury) {
-        uint256 pool = eligible.length - (eligibleSlot[prover] != 0 ? 1 : 0);
-        uint256 size = jurySize < pool ? jurySize : pool;
-        if (size < juryThreshold) return new address[](0);
-
+        uint256 size = _juryCount(prover);
         jury = new address[](size);
         uint256 found = 0;
         for (uint256 k = 0; found < size; k++) {
@@ -173,6 +164,13 @@ contract AttestationManagerV3 {
             }
             if (!taken) jury[found++] = candidate;
         }
+    }
+
+    // Number of jurors a cycle of prover gets, 0 when the SECaaS must decide.
+    function _juryCount(address prover) internal view returns (uint256) {
+        uint256 pool = eligible.length - (eligibleSlot[prover] != 0 ? 1 : 0);
+        uint256 size = jurySize < pool ? jurySize : pool;
+        return size < juryThreshold ? 0 : size;
     }
 
     // The jury of a cycle, seeded by the hash of the block holding its
@@ -200,11 +198,6 @@ contract AttestationManagerV3 {
     function RemoveAgent() public {
         Agent storage currentAgent = agent[msg.sender];
         require(currentAgent.registered, "RemoveAgent : Agent is not registered");
-
-        // If the departing agent is the current root-of-trust, fall back to secaas.
-        if (msg.sender == currentVerifier) {
-            currentVerifier = secaas;
-        }
         _setEligible(msg.sender, false);
 
         uint idx = indexOf[msg.sender];
@@ -216,14 +209,6 @@ contract AttestationManagerV3 {
         delete indexOf[msg.sender];
         delete agent[msg.sender];
         emit AgentRemoved(msg.sender);
-    }
-
-    // Returns currentVerifier unless prover == currentVerifier, in which case falls back to secaas.
-    function _assignVerifier(address prover) internal view returns (address) {
-        if (currentVerifier != prover) {
-            return currentVerifier;
-        }
-        return secaas;
     }
 
     function GetAgentInfo(address agentAddress, address callAddress) public view returns (string memory, bool, bytes32[] memory) {
@@ -241,7 +226,9 @@ contract AttestationManagerV3 {
 
         MutualAttestation storage currentAttestation = attestation[id];
         currentAttestation.id = id;
-        currentAttestation.verifier = _assignVerifier(msg.sender);
+        // A jury cycle has no single verifier: its jurors are drawn at the
+        // first vote. The SECaaS verifies when no jury can be drawn.
+        currentAttestation.verifier = _juryCount(msg.sender) > 0 ? address(0) : secaas;
         currentAttestation.prover = msg.sender;
         currentAttestation.fresh_signature = freshMeasurement;
         currentAttestation.result = AttestationResult.None;
@@ -249,8 +236,8 @@ contract AttestationManagerV3 {
         currentAttestation.iterCount = iterCount;
         currentAttestation.seedBlock = block.number;
 
-        // The reference is already on chain, so a peer verifier can evaluate
-        // at once. The SECaaS is only notified when it is the elected verifier.
+        // The reference is already on chain, so the jurors can evaluate at
+        // once. The SECaaS is only notified when it is the elected verifier.
         if (currentAttestation.verifier == secaas) {
             currentAttestation.state = AttestationState.Open;
             emit AttestationStarted(id, iterCount);
@@ -262,10 +249,13 @@ contract AttestationManagerV3 {
 
     // A juror gives its verdict. The first vote draws the jury and freezes it,
     // so that later changes to the eligible list do not change who may vote.
+    // juryThreshold matching votes close the cycle; a jury that has all voted
+    // without reaching it hands the cycle to the SECaaS.
     function Vote(bytes32 id, bool verdict) public {
         MutualAttestation storage a = attestation[id];
         require(a.prover != address(0), "Vote : unknown cycle");
         require(a.state != AttestationState.Closed, "Vote : cycle closed");
+        require(a.verifier != secaas, "Vote : cycle is with the SECaaS");
         require(block.number > a.seedBlock, "Vote : evidence block not sealed yet");
         if (!a.juryDrawn) {
             a.jury = PreviewJury(id);
@@ -281,6 +271,23 @@ contract AttestationManagerV3 {
         a.voted[msg.sender] = true;
         if (verdict) a.votesFor++; else a.votesAgainst++;
         emit VoteCast(id, msg.sender, verdict);
+
+        if (a.votesFor >= juryThreshold || a.votesAgainst >= juryThreshold) {
+            _close(id, a.votesFor >= juryThreshold);
+        } else if (a.votesFor + a.votesAgainst == a.jury.length) {
+            a.verifier = secaas;
+            a.state = AttestationState.Open;
+            emit AttestationStarted(id, a.iterCount);
+        }
+    }
+
+    function _close(bytes32 id, bool verified) internal {
+        MutualAttestation storage a = attestation[id];
+        a.state = AttestationState.Closed;
+        a.timestamp = block.timestamp;
+        a.result = verified ? AttestationResult.Success : AttestationResult.Failure;
+        _setEligible(a.prover, verified);
+        emit AttestationCompleted(id);
     }
 
     // The frozen jury of a cycle, empty before its first vote.
@@ -316,46 +323,13 @@ contract AttestationManagerV3 {
         return attestation[id].state;
     }
 
-    function CloseAttestationProcess(bytes32 id, bool verified) public returns (bool) {
-        MutualAttestation storage currentAttestation = attestation[id];
-        require(currentAttestation.verifier == msg.sender, "Only the verifier can close the attestation process");
-        require(currentAttestation.state == AttestationState.ReadyForEvaluation, "Attestation is not ready for closure");
-
-        currentAttestation.state = AttestationState.Closed;
-        currentAttestation.timestamp = block.timestamp;
-        _setEligible(currentAttestation.prover, verified);
-
-        if (verified) {
-            currentAttestation.result = AttestationResult.Success;
-            // The successfully verified agent becomes the new root-of-trust verifier.
-            currentVerifier = currentAttestation.prover;
-        } else {
-            currentAttestation.result = AttestationResult.Failure;
-        }
-
-        emit AttestationCompleted(id);
-        return true;
-    }
-
     function ResolveAttestationSECaaS(bytes32 id, bool verified) public {
         require(msg.sender == secaas, "Only the SECaaS can resolve attestations");
 
         MutualAttestation storage currentAttestation = attestation[id];
         require(currentAttestation.state == AttestationState.Open, "Not in Open state");
         require(currentAttestation.verifier == secaas, "SECaaS not elected as verifier");
-
-        currentAttestation.state = AttestationState.Closed;
-        currentAttestation.timestamp = block.timestamp;
-        _setEligible(currentAttestation.prover, verified);
-
-        if (verified) {
-            currentAttestation.result = AttestationResult.Success;
-            currentVerifier = currentAttestation.prover;
-        } else {
-            currentAttestation.result = AttestationResult.Failure;
-        }
-
-        emit AttestationCompleted(id);
+        _close(id, verified);
     }
 
     function IsProver(bytes32 id, address callAddress) public view returns (bool) {
@@ -378,11 +352,5 @@ contract AttestationManagerV3 {
     // Present to keep the ABI compatible with AttestationManagerRR.
     function GetAttestationChain() public pure returns (bytes32[] memory) {
         return new bytes32[](0);
-    }
-
-    // Current root-of-trust verifier — restricted to SECaaS to avoid leaking verifier identity.
-    function GetCurrentVerifier() public view returns (address) {
-        require(msg.sender == secaas, "Only the SECaaS can query the current verifier");
-        return currentVerifier;
     }
 }

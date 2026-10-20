@@ -1,6 +1,18 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
+// Closes a cycle with verdict: by the SECaaS when it is the verifier,
+// otherwise by juryThreshold jurors. A call sees the latest block as the
+// current one, so a block is mined before the jury can be read.
+async function settle(am, secaas, signers, id, verdict) {
+  if (await am.IsVerifier(id, secaas.address)) return am.connect(secaas).ResolveAttestationSECaaS(id, verdict);
+  await ethers.provider.send("evm_mine", []);
+  const jury = await am.PreviewJury(id);
+  for (const j of jury.slice(0, Number(await am.juryThreshold()))) {
+    await am.connect(signers.find((s) => s.address === j)).Vote(id, verdict);
+  }
+}
+
 describe("AttestationManagerV3: jury parameters", function () {
   let secaas, a1, AM;
 
@@ -27,16 +39,11 @@ describe("AttestationManagerV3: eligible agents", function () {
   const REF = ethers.encodeBytes32String("ref");
   let secaas, a1, robotA, robotB, am, n;
 
-  // One cycle of prover, closed by whoever the contract elected.
+  // Two agents only: no jury can be drawn, the SECaaS closes every cycle.
   async function cycle(prover, verified) {
     const id = ethers.encodeBytes32String(`c${n++}`);
     await am.connect(prover).SendEvidence(id, REF, 1);
-    if (await am.IsVerifier(id, secaas.address)) {
-      await am.connect(secaas).ResolveAttestationSECaaS(id, verified);
-    } else {
-      const verifier = [robotA, robotB].find((r) => r.address !== prover.address);
-      await am.connect(verifier).CloseAttestationProcess(id, verified);
-    }
+    await settle(am, secaas, [robotA, robotB], id, verified);
   }
   const eligible = async () => [...(await am.GetEligibleAgents())].sort();
 
@@ -85,16 +92,7 @@ describe("AttestationManagerV3: jury draw", function () {
   async function cycle(prover, verified) {
     const id = ethers.encodeBytes32String(`c${n++}`);
     const receipt = await (await am.connect(prover).SendEvidence(id, REF, 1)).wait();
-    if (await am.IsVerifier(id, secaas.address)) {
-      await am.connect(secaas).ResolveAttestationSECaaS(id, verified);
-    } else {
-      for (const r of robots) {
-        if (await am.IsVerifier(id, r.address)) {
-          await am.connect(r).CloseAttestationProcess(id, verified);
-          break;
-        }
-      }
-    }
+    await settle(am, secaas, robots, id, verified);
     return { id, block: receipt.blockNumber };
   }
 
@@ -158,10 +156,7 @@ describe("AttestationManagerV3: vote", function () {
   const REF = ethers.encodeBytes32String("ref");
   let secaas, a1, robots, am, n;
 
-  async function close(id, verified) {
-    if (await am.IsVerifier(id, secaas.address)) return am.connect(secaas).ResolveAttestationSECaaS(id, verified);
-    for (const r of robots) if (await am.IsVerifier(id, r.address)) return am.connect(r).CloseAttestationProcess(id, verified);
-  }
+  const close = (id, verified) => settle(am, secaas, robots, id, verified);
   async function evidence(prover) {
     const id = ethers.encodeBytes32String(`c${n++}`);
     await am.connect(prover).SendEvidence(id, REF, 1);
@@ -226,7 +221,7 @@ describe("AttestationManagerV3: vote", function () {
 
   it("rejects a vote on a closed cycle", async () => {
     await close(id, true);
-    await expect(am.connect(signer(jury[0])).Vote(id, true)).to.be.revertedWith("Vote : cycle closed");
+    await expect(am.connect(signer(jury[2])).Vote(id, true)).to.be.revertedWith("Vote : cycle closed");
   });
 
   it("freezes the jury at the first vote", async () => {
@@ -237,5 +232,98 @@ describe("AttestationManagerV3: vote", function () {
     }
     expect([...(await am.GetJury(id))]).to.deep.equal(jury);
     await expect(am.connect(signer(jury[1])).Vote(id, true)).to.emit(am, "VoteCast");
+  });
+});
+
+describe("AttestationManagerV3: closure", function () {
+  const REF = ethers.encodeBytes32String("ref");
+  let secaas, a1, robots, am, n;
+
+  const signer = (address) => robots.find((r) => r.address === address);
+  async function evidence(prover) {
+    const id = ethers.encodeBytes32String(`c${n++}`);
+    await am.connect(prover).SendEvidence(id, REF, 1);
+    return id;
+  }
+
+  // Deploys with a jury of size and threshold quorum, makes the 8 robots
+  // eligible, then robot 0 sends evidence. Returns the cycle and its jury.
+  async function setup(size, quorum) {
+    const AM = await ethers.getContractFactory("AttestationManagerV3", secaas);
+    am = await AM.deploy([a1.address], 1, size, quorum, 5);
+    for (const r of robots) {
+      await am.connect(r).RegisterAgent("r");
+      await am.connect(a1).SetReference(r.address, REF);
+    }
+    n = 0;
+    for (const r of robots) await settle(am, secaas, robots, await evidence(r), true);
+    const id = await evidence(robots[0]);
+    await ethers.provider.send("evm_mine", []);
+    return { id, jury: [...(await am.PreviewJury(id))].map(signer) };
+  }
+  const eligible = async (r) => (await am.GetEligibleAgents()).includes(r.address);
+  const result = async (id) => (await am.GetAttestationInfo(id))[2];
+  const SUCCESS = 2n, FAILURE = 1n;
+
+  beforeEach(async () => {
+    const signers = await ethers.getSigners();
+    [secaas, a1] = signers;
+    robots = signers.slice(2, 10);
+  });
+
+  it("goes to the SECaaS until a jury can be drawn, then to the jury", async () => {
+    const AM = await ethers.getContractFactory("AttestationManagerV3", secaas);
+    am = await AM.deploy([a1.address], 1, 3, 2, 5);
+    for (const r of robots.slice(0, 3)) {
+      await am.connect(r).RegisterAgent("r");
+      await am.connect(a1).SetReference(r.address, REF);
+    }
+    n = 0;
+    // Robots 0 and 1 have fewer than 2 eligible peers when they send evidence.
+    for (const r of robots.slice(0, 2)) {
+      const id = await evidence(r);
+      expect(await am.IsVerifier(id, secaas.address)).to.equal(true);
+      await am.connect(secaas).ResolveAttestationSECaaS(id, true);
+    }
+    await expect(am.connect(robots[2]).SendEvidence(ethers.encodeBytes32String("j"), REF, 1))
+      .to.emit(am, "ReadyForEvaluation");
+    expect(await am.IsVerifier(ethers.encodeBytes32String("j"), secaas.address)).to.equal(false);
+  });
+
+  it("closes on 2 votes for", async () => {
+    const { id, jury } = await setup(3, 2);
+    await am.connect(jury[0]).Vote(id, true);
+    await expect(am.connect(jury[1]).Vote(id, true)).to.emit(am, "AttestationCompleted").withArgs(id);
+    expect(await result(id)).to.equal(SUCCESS);
+    expect(await eligible(robots[0])).to.equal(true);
+  });
+
+  it("closes on 2 votes against and removes the prover from the eligible list", async () => {
+    const { id, jury } = await setup(3, 2);
+    await am.connect(jury[0]).Vote(id, false);
+    await am.connect(jury[1]).Vote(id, false);
+    expect(await result(id)).to.equal(FAILURE);
+    expect(await eligible(robots[0])).to.equal(false);
+  });
+
+  it("closes on 2 against 1, in both directions", async () => {
+    for (const [verdicts, expected] of [[[true, false, true], SUCCESS], [[false, true, false], FAILURE]]) {
+      const { id, jury } = await setup(3, 2);
+      await am.connect(jury[0]).Vote(id, verdicts[0]);
+      await am.connect(jury[1]).Vote(id, verdicts[1]);
+      expect(await am.GetAttestationState(id)).to.equal(1n); // ReadyForEvaluation
+      await am.connect(jury[2]).Vote(id, verdicts[2]);
+      expect(await result(id)).to.equal(expected);
+    }
+  });
+
+  it("hands a tie in a jury of 2 to the SECaaS", async () => {
+    const { id, jury } = await setup(2, 2);
+    expect(jury.length).to.equal(2);
+    await am.connect(jury[0]).Vote(id, true);
+    await expect(am.connect(jury[1]).Vote(id, false)).to.emit(am, "AttestationStarted").withArgs(id, 1);
+    expect(await am.IsVerifier(id, secaas.address)).to.equal(true);
+    await am.connect(secaas).ResolveAttestationSECaaS(id, false);
+    expect(await result(id)).to.equal(FAILURE);
   });
 });
