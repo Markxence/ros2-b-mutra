@@ -58,6 +58,12 @@ contract AttestationManagerV3 {
     uint256 public juryThreshold;
     uint256 public juryTimeoutBlocks;
 
+    // Agents whose last attestation succeeded: the pool the jury is drawn
+    // from. eligibleSlot is the index in eligible plus one, 0 when absent, so
+    // adding and removing cost the same whatever the number of agents.
+    address[] private eligible;
+    mapping(address => uint256) private eligibleSlot;
+
     event AgentRegistered(address agent);
     event AgentRemoved(address agent);
     event AttestationStarted(bytes32 id, uint32 iterCount);
@@ -112,7 +118,30 @@ contract AttestationManagerV3 {
     function ResetChain() public {
         require(msg.sender == secaas, "Only the SECaaS can reset the chain");
         currentVerifier = secaas;
+        while (eligible.length > 0) {
+            delete eligibleSlot[eligible[eligible.length - 1]];
+            eligible.pop();
+        }
         emit ChainReset();
+    }
+
+    function _setEligible(address a, bool on) internal {
+        uint256 slot = eligibleSlot[a];
+        if (on == (slot != 0)) return;
+        if (on) {
+            eligible.push(a);
+            eligibleSlot[a] = eligible.length;
+            return;
+        }
+        address last = eligible[eligible.length - 1];
+        eligible[slot - 1] = last;
+        eligibleSlot[last] = slot;
+        eligible.pop();
+        delete eligibleSlot[a];
+    }
+
+    function GetEligibleAgents() public view returns (address[] memory) {
+        return eligible;
     }
 
     function RegisterAgent(string memory name) public {
@@ -133,6 +162,7 @@ contract AttestationManagerV3 {
         if (msg.sender == currentVerifier) {
             currentVerifier = secaas;
         }
+        _setEligible(msg.sender, false);
 
         uint idx = indexOf[msg.sender];
         address last = participants[participants.length - 1];
@@ -221,6 +251,7 @@ contract AttestationManagerV3 {
 
         currentAttestation.state = AttestationState.Closed;
         currentAttestation.timestamp = block.timestamp;
+        _setEligible(currentAttestation.prover, verified);
 
         if (verified) {
             currentAttestation.result = AttestationResult.Success;
@@ -243,6 +274,7 @@ contract AttestationManagerV3 {
 
         currentAttestation.state = AttestationState.Closed;
         currentAttestation.timestamp = block.timestamp;
+        _setEligible(currentAttestation.prover, verified);
 
         if (verified) {
             currentAttestation.result = AttestationResult.Success;
