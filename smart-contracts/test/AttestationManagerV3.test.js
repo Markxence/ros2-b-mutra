@@ -153,3 +153,89 @@ describe("AttestationManagerV3: jury draw", function () {
     await expect(am.PreviewJury(ethers.encodeBytes32String("none"))).to.be.revertedWith("PreviewJury : unknown cycle");
   });
 });
+
+describe("AttestationManagerV3: vote", function () {
+  const REF = ethers.encodeBytes32String("ref");
+  let secaas, a1, robots, am, n;
+
+  async function close(id, verified) {
+    if (await am.IsVerifier(id, secaas.address)) return am.connect(secaas).ResolveAttestationSECaaS(id, verified);
+    for (const r of robots) if (await am.IsVerifier(id, r.address)) return am.connect(r).CloseAttestationProcess(id, verified);
+  }
+  async function evidence(prover) {
+    const id = ethers.encodeBytes32String(`c${n++}`);
+    await am.connect(prover).SendEvidence(id, REF, 1);
+    return id;
+  }
+  const signer = (address) => robots.find((r) => r.address === address);
+
+  // Jury of 3, threshold 2; the 8 robots are eligible, then robot 0 sends evidence.
+  let id, jury;
+  beforeEach(async () => {
+    const signers = await ethers.getSigners();
+    [secaas, a1] = signers;
+    robots = signers.slice(2, 10);
+    const AM = await ethers.getContractFactory("AttestationManagerV3", secaas);
+    am = await AM.deploy([a1.address], 1, 3, 2, 5);
+    for (const r of robots) {
+      await am.connect(r).RegisterAgent("r");
+      await am.connect(a1).SetReference(r.address, REF);
+    }
+    n = 0;
+    for (const r of robots) await close(await evidence(r), true);
+    id = await evidence(robots[0]);
+    // A call sees the latest block as the current one: the jury is readable
+    // once a block has been sealed after the evidence block.
+    await ethers.provider.send("evm_mine", []);
+    jury = [...(await am.PreviewJury(id))];
+  });
+
+  it("records a juror's vote", async () => {
+    await expect(am.connect(signer(jury[0])).Vote(id, true)).to.emit(am, "VoteCast").withArgs(id, jury[0], true);
+  });
+
+  it("rejects a vote in the evidence block", async () => {
+    // Both transactions go into the same block; gas is fixed so that nothing
+    // is estimated against a state that does not hold the evidence yet.
+    await ethers.provider.send("evm_setAutomine", [false]);
+    const fresh = ethers.encodeBytes32String("same-block");
+    let sent, vote;
+    try {
+      sent = await am.connect(robots[1]).SendEvidence(fresh, REF, 1, { gasLimit: 1_000_000 });
+      vote = await am.connect(robots[2]).Vote(fresh, true, { gasLimit: 1_000_000 });
+      await ethers.provider.send("evm_mine", []);
+    } finally {
+      await ethers.provider.send("evm_setAutomine", [true]);
+    }
+    const [r1, r2] = await Promise.all([sent.hash, vote.hash].map((h) => ethers.provider.getTransactionReceipt(h)));
+    expect(r1.blockNumber).to.equal(r2.blockNumber);
+    expect(r1.status).to.equal(1);
+    expect(r2.status).to.equal(0);
+  });
+
+  it("rejects a caller outside the jury, the prover included", async () => {
+    const outsider = robots.find((r) => r !== robots[0] && !jury.includes(r.address));
+    await expect(am.connect(outsider).Vote(id, true)).to.be.revertedWith("Vote : caller is not in the jury");
+    await expect(am.connect(robots[0]).Vote(id, true)).to.be.revertedWith("Vote : caller is not in the jury");
+  });
+
+  it("rejects a second vote from the same juror", async () => {
+    await am.connect(signer(jury[0])).Vote(id, true);
+    await expect(am.connect(signer(jury[0])).Vote(id, false)).to.be.revertedWith("Vote : already voted");
+  });
+
+  it("rejects a vote on a closed cycle", async () => {
+    await close(id, true);
+    await expect(am.connect(signer(jury[0])).Vote(id, true)).to.be.revertedWith("Vote : cycle closed");
+  });
+
+  it("freezes the jury at the first vote", async () => {
+    await am.connect(signer(jury[0])).Vote(id, true);
+    // Two non-jurors fail an attestation and leave the eligible list.
+    for (const r of robots.filter((r) => r !== robots[0] && !jury.includes(r.address)).slice(0, 2)) {
+      await close(await evidence(r), false);
+    }
+    expect([...(await am.GetJury(id))]).to.deep.equal(jury);
+    await expect(am.connect(signer(jury[1])).Vote(id, true)).to.emit(am, "VoteCast");
+  });
+});

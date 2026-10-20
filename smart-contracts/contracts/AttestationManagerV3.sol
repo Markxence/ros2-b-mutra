@@ -21,6 +21,11 @@ contract AttestationManagerV3 {
         AttestationResult result;
         uint256 timestamp;
         uint256 seedBlock; // block holding the evidence: its hash seeds the jury draw
+        bool juryDrawn;    // the jury is drawn and frozen at the first vote
+        address[] jury;
+        mapping(address => bool) voted;
+        uint8 votesFor;
+        uint8 votesAgainst;
         uint32 iterCount; // IterQ depth: number of nested SHA-256 folds
                          // composing fresh_signature. Verifier must apply
                          // the same fold count to ref_signature before
@@ -70,6 +75,7 @@ contract AttestationManagerV3 {
     event AttestationStarted(bytes32 id, uint32 iterCount);
     event ReadyForEvaluation(bytes32 id);
     event AttestationCompleted(bytes32 id);
+    event VoteCast(bytes32 indexed id, address indexed juror, bool verdict);
     event ChainReset();
     event ReferenceApproved(address indexed agent, bytes32 newReference, address indexed admin);
     event ReferenceSet(address indexed agent, bytes32 oldReference, bytes32 newReference, uint256 version);
@@ -252,6 +258,34 @@ contract AttestationManagerV3 {
             currentAttestation.state = AttestationState.ReadyForEvaluation;
             emit ReadyForEvaluation(id);
         }
+    }
+
+    // A juror gives its verdict. The first vote draws the jury and freezes it,
+    // so that later changes to the eligible list do not change who may vote.
+    function Vote(bytes32 id, bool verdict) public {
+        MutualAttestation storage a = attestation[id];
+        require(a.prover != address(0), "Vote : unknown cycle");
+        require(a.state != AttestationState.Closed, "Vote : cycle closed");
+        require(block.number > a.seedBlock, "Vote : evidence block not sealed yet");
+        if (!a.juryDrawn) {
+            a.jury = PreviewJury(id);
+            a.juryDrawn = true;
+        }
+        bool inJury = false;
+        for (uint256 i = 0; i < a.jury.length; i++) {
+            if (a.jury[i] == msg.sender) { inJury = true; break; }
+        }
+        require(inJury, "Vote : caller is not in the jury");
+        require(!a.voted[msg.sender], "Vote : already voted");
+
+        a.voted[msg.sender] = true;
+        if (verdict) a.votesFor++; else a.votesAgainst++;
+        emit VoteCast(id, msg.sender, verdict);
+    }
+
+    // The frozen jury of a cycle, empty before its first vote.
+    function GetJury(bytes32 id) public view returns (address[] memory) {
+        return attestation[id].jury;
     }
 
     function GetProverAddress(bytes32 id, address callAddress) public view returns (address) {
