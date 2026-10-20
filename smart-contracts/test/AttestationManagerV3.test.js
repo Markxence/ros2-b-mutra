@@ -327,6 +327,15 @@ describe("AttestationManagerV3: closure and expiry", function () {
     expect(await result(id)).to.equal(FAILURE);
   });
 
+  it("lets the jurors read the evidence, and no one else", async () => {
+    const { id, jury } = await setup(3, 2);
+    const [fresh, ref, iter] = await am.GetAttestationSignatures(id, jury[0].address);
+    expect([fresh, ref, iter]).to.deep.equal([REF, REF, 1n]);
+    const outsider = robots.find((r) => r !== robots[0] && !jury.includes(r));
+    await expect(am.GetAttestationSignatures(id, outsider.address)).to.be.revertedWith("Only the verifier can retrieve the signatures");
+    await expect(am.GetAttestationSignatures(id, ethers.ZeroAddress)).to.be.revertedWith("Only the verifier can retrieve the signatures");
+  });
+
   // Mines until the latest block is n, so that the next transaction goes in n + 1.
   async function mineTo(n) {
     const latest = await ethers.provider.getBlockNumber();

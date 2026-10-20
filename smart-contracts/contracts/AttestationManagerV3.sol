@@ -261,11 +261,7 @@ contract AttestationManagerV3 {
             a.jury = PreviewJury(id);
             a.juryDrawn = true;
         }
-        bool inJury = false;
-        for (uint256 i = 0; i < a.jury.length; i++) {
-            if (a.jury[i] == msg.sender) { inJury = true; break; }
-        }
-        require(inJury, "Vote : caller is not in the jury");
+        require(_contains(a.jury, msg.sender), "Vote : caller is not in the jury");
         require(!a.voted[msg.sender], "Vote : already voted");
 
         a.voted[msg.sender] = true;
@@ -297,6 +293,13 @@ contract AttestationManagerV3 {
         emit AttestationStarted(id, a.iterCount);
     }
 
+    function _contains(address[] memory list, address who) internal pure returns (bool) {
+        for (uint256 i = 0; i < list.length; i++) {
+            if (list[i] == who) return true;
+        }
+        return false;
+    }
+
     function _close(bytes32 id, bool verified) internal {
         MutualAttestation storage a = attestation[id];
         a.state = AttestationState.Closed;
@@ -320,7 +323,11 @@ contract AttestationManagerV3 {
 
     function GetAttestationSignatures(bytes32 id, address callAddress) public view returns (bytes32, bytes32, uint32) {
         MutualAttestation storage currentAttestation = attestation[id];
-        require(currentAttestation.verifier == callAddress, "Only the verifier can retrieve the signatures");
+        // A jury cycle has no verifier: its jurors read the evidence instead.
+        bool juror = currentAttestation.prover != address(0) && currentAttestation.verifier == address(0) &&
+            _contains(currentAttestation.juryDrawn ? currentAttestation.jury : PreviewJury(id), callAddress);
+        require(juror || (callAddress != address(0) && currentAttestation.verifier == callAddress),
+            "Only the verifier can retrieve the signatures");
         require(
             currentAttestation.state == AttestationState.ReadyForEvaluation ||
             currentAttestation.verifier == secaas,
