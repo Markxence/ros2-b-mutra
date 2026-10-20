@@ -275,10 +275,26 @@ contract AttestationManagerV3 {
         if (a.votesFor >= juryThreshold || a.votesAgainst >= juryThreshold) {
             _close(id, a.votesFor >= juryThreshold);
         } else if (a.votesFor + a.votesAgainst == a.jury.length) {
-            a.verifier = secaas;
-            a.state = AttestationState.Open;
-            emit AttestationStarted(id, a.iterCount);
+            _toSecaas(id);
         }
+    }
+
+    // Anyone may hand a jury cycle to the SECaaS once juryTimeoutBlocks
+    // blocks have passed since its evidence without a close.
+    function Expire(bytes32 id) public {
+        MutualAttestation storage a = attestation[id];
+        require(a.prover != address(0), "Expire : unknown cycle");
+        require(a.state != AttestationState.Closed, "Expire : cycle closed");
+        require(a.verifier != secaas, "Expire : cycle is with the SECaaS");
+        require(block.number >= a.seedBlock + juryTimeoutBlocks, "Expire : timeout not reached");
+        _toSecaas(id);
+    }
+
+    function _toSecaas(bytes32 id) internal {
+        MutualAttestation storage a = attestation[id];
+        a.verifier = secaas;
+        a.state = AttestationState.Open;
+        emit AttestationStarted(id, a.iterCount);
     }
 
     function _close(bytes32 id, bool verified) internal {

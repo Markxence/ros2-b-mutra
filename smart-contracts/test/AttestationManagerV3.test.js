@@ -235,7 +235,7 @@ describe("AttestationManagerV3: vote", function () {
   });
 });
 
-describe("AttestationManagerV3: closure", function () {
+describe("AttestationManagerV3: closure and expiry", function () {
   const REF = ethers.encodeBytes32String("ref");
   let secaas, a1, robots, am, n;
 
@@ -325,5 +325,35 @@ describe("AttestationManagerV3: closure", function () {
     expect(await am.IsVerifier(id, secaas.address)).to.equal(true);
     await am.connect(secaas).ResolveAttestationSECaaS(id, false);
     expect(await result(id)).to.equal(FAILURE);
+  });
+
+  // Mines until the latest block is n, so that the next transaction goes in n + 1.
+  async function mineTo(n) {
+    const latest = await ethers.provider.getBlockNumber();
+    if (n > latest) await ethers.provider.send("hardhat_mine", ["0x" + (n - latest).toString(16)]);
+  }
+
+  it("expires a jury cycle 5 blocks after its evidence, not before", async () => {
+    const { id, jury } = await setup(3, 2);
+    const seed = (await am.queryFilter(am.filters.ReadyForEvaluation(), 0)).find((e) => e.args[0] === id).blockNumber;
+    await am.connect(jury[0]).Vote(id, true);
+    await mineTo(seed + 3);
+    await expect(am.connect(robots[0]).Expire(id)).to.be.revertedWith("Expire : timeout not reached");
+    await mineTo(seed + 4);
+    await expect(am.connect(robots[0]).Expire(id)).to.emit(am, "AttestationStarted").withArgs(id, 1);
+    expect(await am.IsVerifier(id, secaas.address)).to.equal(true);
+    await expect(am.connect(jury[1]).Vote(id, true)).to.be.revertedWith("Vote : cycle is with the SECaaS");
+    await expect(am.connect(robots[0]).Expire(id)).to.be.revertedWith("Expire : cycle is with the SECaaS");
+    await am.connect(secaas).ResolveAttestationSECaaS(id, true);
+    expect(await result(id)).to.equal(SUCCESS);
+  });
+
+  it("does not expire a closed or unknown cycle", async () => {
+    const { id, jury } = await setup(3, 2);
+    await am.connect(jury[0]).Vote(id, true);
+    await am.connect(jury[1]).Vote(id, true);
+    await ethers.provider.send("hardhat_mine", ["0x10"]);
+    await expect(am.Expire(id)).to.be.revertedWith("Expire : cycle closed");
+    await expect(am.Expire(ethers.encodeBytes32String("none"))).to.be.revertedWith("Expire : unknown cycle");
   });
 });
