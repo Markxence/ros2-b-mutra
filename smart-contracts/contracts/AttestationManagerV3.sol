@@ -20,6 +20,7 @@ contract AttestationManagerV3 {
         AttestationState state;
         AttestationResult result;
         uint256 timestamp;
+        uint256 seedBlock; // block holding the evidence: its hash seeds the jury draw
         uint32 iterCount; // IterQ depth: number of nested SHA-256 folds
                          // composing fresh_signature. Verifier must apply
                          // the same fold count to ref_signature before
@@ -144,6 +145,42 @@ contract AttestationManagerV3 {
         return eligible;
     }
 
+    // Draws min(jurySize, eligible agents other than the prover) distinct
+    // jurors from seed. Returns an empty jury when fewer than juryThreshold
+    // can be drawn: the cycle then goes to the SECaaS. Indexes are drawn with
+    // rejection, without copying the list.
+    // ponytail: rejection loop, fine for a jury of a few agents; switch to a
+    // partial Fisher-Yates if jurySize gets close to the number of agents.
+    function DrawJury(bytes32 seed, address prover) public view returns (address[] memory jury) {
+        uint256 pool = eligible.length - (eligibleSlot[prover] != 0 ? 1 : 0);
+        uint256 size = jurySize < pool ? jurySize : pool;
+        if (size < juryThreshold) return new address[](0);
+
+        jury = new address[](size);
+        uint256 found = 0;
+        for (uint256 k = 0; found < size; k++) {
+            address candidate = eligible[uint256(keccak256(abi.encode(seed, k))) % eligible.length];
+            if (candidate == prover) continue;
+            bool taken = false;
+            for (uint256 j = 0; j < found; j++) {
+                if (jury[j] == candidate) { taken = true; break; }
+            }
+            if (!taken) jury[found++] = candidate;
+        }
+    }
+
+    // The jury of a cycle, seeded by the hash of the block holding its
+    // evidence and by its id. Readable from the next block on, so that the
+    // prover commits to its evidence before the draw is known.
+    function PreviewJury(bytes32 id) public view returns (address[] memory) {
+        MutualAttestation storage a = attestation[id];
+        require(a.prover != address(0), "PreviewJury : unknown cycle");
+        require(block.number > a.seedBlock, "PreviewJury : evidence block not sealed yet");
+        bytes32 blockHash = blockhash(a.seedBlock);
+        require(blockHash != bytes32(0), "PreviewJury : evidence block too old");
+        return DrawJury(keccak256(abi.encode(blockHash, id)), a.prover);
+    }
+
     function RegisterAgent(string memory name) public {
         require(bytes(name).length > 0, "Name is not valid");
         Agent storage currentAgent = agent[msg.sender];
@@ -204,6 +241,7 @@ contract AttestationManagerV3 {
         currentAttestation.result = AttestationResult.None;
         currentAttestation.timestamp = 0;
         currentAttestation.iterCount = iterCount;
+        currentAttestation.seedBlock = block.number;
 
         // The reference is already on chain, so a peer verifier can evaluate
         // at once. The SECaaS is only notified when it is the elected verifier.
