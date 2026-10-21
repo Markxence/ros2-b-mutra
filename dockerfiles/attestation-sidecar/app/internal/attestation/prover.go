@@ -15,6 +15,8 @@ import (
 	// "app/internal/metrics"
 	"app/internal/storage"
 	"app/internal/utils"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // SelfIntegrityInfo holds self-integrity check configuration
@@ -196,7 +198,11 @@ func ProcessProverAttestation(
 		}
 		logger.Info("%s Attestation Complete", logPrefix)
 		logger.Info("%s Result: %s", logPrefix, statusIcon)
-		logger.Info("%s Verified by: %s at %v", logPrefix, verifier.Hex(), ts)
+		verifiedBy := verifier.Hex()
+		if verifier == (common.Address{}) {
+			verifiedBy = "the jury" // V3: a jury cycle has no single verifier
+		}
+		logger.Info("%s Verified by: %s at %v", logPrefix, verifiedBy, ts)
 	}
 
 	timestamps["p_prover_finished"] = utils.PerfNs()

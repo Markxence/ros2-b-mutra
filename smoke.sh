@@ -34,9 +34,21 @@ peer_verified() {
     (( $(docker logs "robot$i-sidecar" 2>&1 | grep "Verified by:" | grep -civ "$SECAAS_ADDR" || true) >= 1 )) || return 1
   done
 }
-wait_for 120 peer_verified || { echo "FAIL: not every robot was verified by a peer within 120 s"; exit 1; }
-no_failure 1 "failed attestation under peer verification"
-echo "ok: every robot was verified by a peer"
+jury_verified() {  # V3: every robot had a cycle closed by the jury and voted in one
+  for i in $(seq 1 $N); do
+    (( $(docker logs "robot$i-sidecar" 2>&1 | grep -c "Prover.*Verified by: the jury" || true) >= 1 )) || return 1
+    (( $(docker logs "robot$i-sidecar" 2>&1 | grep -c "Juror.*Vote sent" || true) >= 1 )) || return 1
+  done
+}
+if [[ "$CONTRACT" == v3 ]]; then
+  wait_for 120 jury_verified || { echo "FAIL: not every robot was verified by the jury and voted within 120 s"; exit 1; }
+  no_failure 1 "failed attestation under jury verification"
+  echo "ok: every robot was verified by a jury of peers and voted in one"
+else
+  wait_for 120 peer_verified || { echo "FAIL: not every robot was verified by a peer within 120 s"; exit 1; }
+  no_failure 1 "failed attestation under peer verification"
+  echo "ok: every robot was verified by a peer"
+fi
 
 if [[ "$CONTRACT" == v[23] ]]; then
   (( $(docker logs secaas 2>&1 | grep -c "ref. measurement sent" || true) == 0 )) \
@@ -47,5 +59,13 @@ fi
 ./tools/tamper.sh robot1 >/dev/null
 wait_for 60 robot1_failed || { echo "FAIL: tampering of robot1 not detected within 60 s"; exit 1; }
 no_failure 2 "reported a failure although only robot1 was tampered"
+if [[ "$CONTRACT" == v3 ]]; then
+  votes_against=0
+  for i in $(seq 2 $N); do
+    votes_against=$(( votes_against + $(docker logs "robot$i-sidecar" 2>&1 | grep -c "Juror.*Vote sent (verdict: .*FAILURE" || true) ))
+  done
+  (( votes_against >= 2 )) || { echo "FAIL: robot1 was not voted down by its jury ($votes_against votes against)"; exit 1; }
+  echo "ok: the jury voted robot1 down ($votes_against votes against)"
+fi
 echo "ok: tampering of robot1 detected, other robots unaffected"
 echo "PASS"
