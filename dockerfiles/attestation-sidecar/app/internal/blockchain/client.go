@@ -676,6 +676,51 @@ func (bc *BlockchainClient) IsVerifier(attID string) (bool, error) {
 	return v, nil
 }
 
+// HasJury tells whether the deployed contract draws a jury per cycle (V3).
+func (bc *BlockchainClient) HasJury() bool {
+	_, ok := bc.contractABI.Methods["Vote"]
+	return ok
+}
+
+func (bc *BlockchainClient) Address() common.Address {
+	return bc.ethAddress
+}
+
+func (bc *BlockchainClient) BlockNumber() (uint64, error) {
+	return bc.client.BlockNumber(context.Background())
+}
+
+// TxBlockNumber returns the block a transaction was mined in.
+func (bc *BlockchainClient) TxBlockNumber(txHashStr string) (uint64, error) {
+	receipt, err := bc.client.TransactionReceipt(context.Background(), common.HexToHash(txHashStr))
+	if err != nil {
+		return 0, err
+	}
+	return receipt.BlockNumber.Uint64(), nil
+}
+
+// JuryTimeoutBlocks returns the number of blocks after its evidence block
+// from which a V3 jury cycle can be expired.
+func (bc *BlockchainClient) JuryTimeoutBlocks() (uint64, error) {
+	data, err := bc.contractABI.Pack("juryTimeoutBlocks")
+	if err != nil {
+		return 0, err
+	}
+	res, err := bc.rawEthCall(nil, data)
+	if err != nil {
+		return 0, err
+	}
+	values, err := bc.contractABI.Unpack("juryTimeoutBlocks", res)
+	if err != nil {
+		return 0, err
+	}
+	v, ok := values[0].(*big.Int)
+	if !ok {
+		return 0, fmt.Errorf("juryTimeoutBlocks: unexpected type %T", values[0])
+	}
+	return v.Uint64(), nil
+}
+
 // PreviewJury returns the jury of a V3 cycle. The contract reverts until a
 // block has been sealed after the evidence block.
 func (bc *BlockchainClient) PreviewJury(attID string) ([]common.Address, error) {

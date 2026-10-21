@@ -86,7 +86,7 @@ func ProcessProverAttestation(
 
 	// Send evidence with wait=true and timeout=60s. iterCount carries K for
 	// the on-chain record so the verifier can re-derive the chained reference.
-	_, err := bc.SendEvidence(attestationID, measurement, iterCount, waitForTx, 60)
+	txHash, err := bc.SendEvidence(attestationID, measurement, iterCount, waitForTx, 60)
 
 	timestamps["p_send_evidence_finished"] = utils.PerfNs()
 
@@ -151,12 +151,19 @@ func ProcessProverAttestation(
 
 	logger.Info("%s Waiting for verification result...", logPrefix)
 
-	// 4. Wait for Attestation to Close
+	// 4. Wait for Attestation to Close. With a jury (V3), hand the cycle to
+	// the SECaaS once its timeout has passed without enough votes.
+	jury := bc.HasJury()
+	var expireAt uint64 // first block where Expire is accepted, 0 = not known yet
+	expired := false
 	startWait = time.Now()
 	for {
 		state, err := bc.GetAttestationState(attestationID)
 		if err == nil && state == blockchain.Closed {
 			break
+		}
+		if jury && !expired && err == nil && state == blockchain.ReadyForEvaluation {
+			expired = expireIfDue(bc, attestationID, txHash, &expireAt, logPrefix)
 		}
 
 		select {
@@ -206,6 +213,34 @@ func ProcessProverAttestation(
 			resultsFile, // result file path handled by helper if empty
 		)
 	}
+}
+
+// expireIfDue sends Expire once the next block reaches the jury timeout of
+// the cycle. Returns true once Expire has been tried, whatever its outcome:
+// a revert means the jury closed the cycle in the meantime.
+func expireIfDue(bc *blockchain.BlockchainClient, attID, txHash string, expireAt *uint64, logPrefix string) bool {
+	if *expireAt == 0 {
+		seed, err := bc.TxBlockNumber(txHash)
+		if err != nil {
+			return false // evidence not mined yet
+		}
+		timeout, err := bc.JuryTimeoutBlocks()
+		if err != nil {
+			logger.Error("%s Failed to read the jury timeout: %v", logPrefix, err)
+			return true
+		}
+		*expireAt = seed + timeout
+	}
+	head, err := bc.BlockNumber()
+	if err != nil || head+1 < *expireAt {
+		return false
+	}
+	if _, err := bc.Expire(attID, true, 60); err != nil {
+		logger.Warn("%s Expire not sent: %v", logPrefix, err)
+		return true
+	}
+	logger.Info("%s Jury timeout reached, cycle handed to the SECaaS", logPrefix)
+	return true
 }
 
 // RunProverAndCleanup runs the prover and cleans up

@@ -36,6 +36,8 @@ type VerifierConfig struct {
 type verificationJob struct {
 	AttestationID string
 	SeedTs        map[string]interface{}
+	Juror         bool   // V3: vote if drawn in the jury of the cycle
+	EvidenceBlock uint64 // block of the ReadyForEvaluation event
 }
 
 // RunVerifierLogicSequential starts the verifier event loop and worker.
@@ -97,12 +99,23 @@ func RunVerifierLogicSequential(
 				}
 				start := time.Now()
 
-				logger.Info("Processing attestation '%s'", job.AttestationID)
-				processVerifierAttestation(ctx, client, cfg, job.AttestationID, job.SeedTs)
+				selected := true
+				if job.Juror {
+					var err error
+					selected, err = inJury(ctx, client, job.AttestationID, job.EvidenceBlock)
+					if err != nil {
+						logger.Error("[Juror-%s] Failed to read the jury: %v", utils.ShortAttID(job.AttestationID, 4), err)
+						selected = false
+					}
+				}
+				if selected {
+					logger.Info("Processing attestation '%s'", job.AttestationID)
+					processVerifierAttestation(ctx, client, cfg, job.AttestationID, job.SeedTs, job.Juror)
 
-				elapsed := time.Since(start).Seconds()
-				logPrefix := fmt.Sprintf("[Verifier-%s]", utils.ShortAttID(job.AttestationID, 4))
-				logger.Info(logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed)))
+					elapsed := time.Since(start).Seconds()
+					logPrefix := fmt.Sprintf("[Verifier-%s]", utils.ShortAttID(job.AttestationID, 4))
+					logger.Info(logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed)))
+				}
 
 				// Remove from dedup set
 				enqLock.Lock()
@@ -143,7 +156,10 @@ func RunVerifierLogicSequential(
 			return nil // Don't crash handler
 		}
 
-		if isVerifier {
+		// With a jury (V3) no single verifier is elected: the worker checks
+		// whether this agent was drawn once the evidence block is sealed.
+		juror := !isVerifier && client.HasJury()
+		if isVerifier || juror {
 			enqLock.Lock()
 			if !enqueuedIDs[attID] {
 				enqueuedIDs[attID] = true
@@ -155,7 +171,7 @@ func RunVerifierLogicSequential(
 
 				// Non-blocking send to avoid stalling watcher if queue is full
 				select {
-				case workChan <- verificationJob{AttestationID: attID, SeedTs: seed}:
+				case workChan <- verificationJob{AttestationID: attID, SeedTs: seed, Juror: juror, EvidenceBlock: log.BlockNumber}:
 				default:
 					logger.Warn("Verifier queue full, dropping %s", attID)
 				}
@@ -181,6 +197,48 @@ func RunVerifierLogicSequential(
 	logger.Info("Verifier logic stopped")
 }
 
+// inJury waits until the evidence block is sealed, since the contract only
+// draws the jury from the next block on, then tells whether this agent is in it.
+func inJury(ctx context.Context, client *blockchain.BlockchainClient, attID string, evidenceBlock uint64) (bool, error) {
+	for {
+		head, err := client.BlockNumber()
+		if err != nil {
+			return false, err
+		}
+		if head > evidenceBlock {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(proverPollInterval()):
+		}
+	}
+	jury, err := client.PreviewJury(attID)
+	if err != nil {
+		return false, err
+	}
+	names := make([]string, len(jury))
+	selected := false
+	for i, j := range jury {
+		names[i] = j.Hex()
+		selected = selected || j == client.Address()
+	}
+	logPrefix := fmt.Sprintf("[Juror-%s]", utils.ShortAttID(attID, 4))
+	if selected {
+		logger.Info("%s Drawn in the jury: %s", logPrefix, strings.Join(names, ", "))
+	} else {
+		logger.Debug("%s Not drawn, jury: %s", logPrefix, strings.Join(names, ", "))
+	}
+	return selected, nil
+}
+
+// cycleClosed tells whether the other jurors already closed the cycle.
+func cycleClosed(client *blockchain.BlockchainClient, attID string) bool {
+	state, err := client.GetAttestationState(attID)
+	return err == nil && state == blockchain.Closed
+}
+
 // processVerifierAttestation contains the core business logic
 func processVerifierAttestation(
 	ctx context.Context,
@@ -188,6 +246,7 @@ func processVerifierAttestation(
 	cfg VerifierConfig,
 	attestationID string,
 	seedTs map[string]interface{},
+	juror bool,
 ) {
 	timestamps := make(map[string]interface{})
 	// Copy seed
@@ -198,6 +257,13 @@ func processVerifierAttestation(
 	timestamps["verifier_start"] = utils.NowMs()
 	timestamps["p_verifier_start"] = utils.PerfNs()
 	logPrefix := fmt.Sprintf("[Verifier-%s]", utils.ShortAttID(attestationID, 4))
+	if juror {
+		logPrefix = fmt.Sprintf("[Juror-%s]", utils.ShortAttID(attestationID, 4))
+		if cycleClosed(client, attestationID) {
+			logger.Info("%s Cycle already closed by the other jurors, no vote", logPrefix)
+			return
+		}
+	}
 	logger.Info("%s SECaaS Oracle finished. Retrieving signatures for evaluation...", logPrefix)
 
 	// 1. Retrieve Signatures
@@ -240,7 +306,9 @@ func processVerifierAttestation(
 	if isSuccess {
 		statusIcon = "✅ SUCCESS"
 	}
-	logger.Info("%s Attestation closed (result: %s)", logPrefix, statusIcon)
+	if !juror {
+		logger.Info("%s Attestation closed (result: %s)", logPrefix, statusIcon)
+	}
 
 	timestamps["verification_result"] = isSuccess
 	timestamps["result_sent"] = utils.NowMs()
@@ -248,10 +316,22 @@ func processVerifierAttestation(
 
 	// Wait logic based on config
 	timeout := 60 // default timeout
-	_, err = client.SendAttestationResult(attestationID, isSuccess, cfg.WaitForTxConfirmations, timeout)
-	if err != nil {
-		logger.Error("%s Failed to send result: %v", logPrefix, err)
-		// We continue to record what we can
+	if juror {
+		_, err = client.Vote(attestationID, isSuccess, cfg.WaitForTxConfirmations, timeout)
+		switch {
+		case err == nil:
+			logger.Info("%s Vote sent (verdict: %s)", logPrefix, statusIcon)
+		case cycleClosed(client, attestationID):
+			logger.Info("%s Cycle closed by the other jurors before this vote", logPrefix)
+		default:
+			logger.Error("%s Failed to vote: %v", logPrefix, err)
+		}
+	} else {
+		_, err = client.SendAttestationResult(attestationID, isSuccess, cfg.WaitForTxConfirmations, timeout)
+		if err != nil {
+			logger.Error("%s Failed to send result: %v", logPrefix, err)
+			// We continue to record what we can
+		}
 	}
 
 	timestamps["p_send_result_finished"] = utils.PerfNs()
