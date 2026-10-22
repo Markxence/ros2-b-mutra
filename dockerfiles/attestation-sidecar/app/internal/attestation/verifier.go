@@ -114,7 +114,7 @@ func RunVerifierLogicSequential(
 
 					elapsed := time.Since(start).Seconds()
 					logPrefix := fmt.Sprintf("[Verifier-%s]", utils.ShortAttID(job.AttestationID, 4))
-					logger.Info(logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed)))
+					logger.Info("%s", logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed)))
 				}
 
 				// Remove from dedup set

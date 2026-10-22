@@ -265,7 +265,7 @@ func RunProverAndCleanup(
 
 	defer func() {
 		elapsed := time.Since(start)
-		logger.Info(logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed.Seconds())))
+		logger.Info("%s", logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed.Seconds())))
 		activeAttestations.Delete(attestationID)
 	}()
 
