@@ -250,6 +250,12 @@ func expireIfDue(bc *blockchain.BlockchainClient, attID, txHash string, expireAt
 }
 
 // RunProverAndCleanup runs the prover and cleans up
+// A jury contract refuses a new round while the prover's last one is open,
+// so rounds are sent one after the other instead of losing a measurement.
+// ponytail: waiting rounds queue up without bound if the SSP stays shorter
+// than a round; drop or merge them if that happens.
+var roundMu sync.Mutex
+
 func RunProverAndCleanup(
 	bc *blockchain.BlockchainClient,
 	attestationID string,
@@ -260,6 +266,10 @@ func RunProverAndCleanup(
 	config ProverConfig,
 	activeAttestations *sync.Map,
 ) {
+	if bc.HasJury() {
+		roundMu.Lock()
+		defer roundMu.Unlock()
+	}
 	start := time.Now()
 	logPrefix := fmt.Sprintf("[Prover-%s]", utils.ShortAttID(attestationID, 4))
 
