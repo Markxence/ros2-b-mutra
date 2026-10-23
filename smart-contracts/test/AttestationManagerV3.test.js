@@ -357,6 +357,24 @@ describe("AttestationManagerV3: closure and expiry", function () {
     expect(await result(id)).to.equal(SUCCESS);
   });
 
+  it("refuses a second round while the prover's round is open", async () => {
+    const { id, jury } = await setup(3, 2);
+    const again = (k) => am.connect(robots[0]).SendEvidence(ethers.encodeBytes32String(k), REF, 1);
+    await expect(again("again")).to.be.revertedWith("SendEvidence : prover has an open round");
+    await expect(am.connect(robots[0]).SendEvidence(id, REF, 1)).to.be.revertedWith("SendEvidence : prover has an open round");
+    await expect(am.connect(robots[1]).SendEvidence(ethers.encodeBytes32String("other"), REF, 1)).to.emit(am, "ReadyForEvaluation");
+    await am.connect(jury[0]).Vote(id, true);
+    await am.connect(jury[1]).Vote(id, true);
+    await expect(again("after close")).to.emit(am, "ReadyForEvaluation");
+  });
+
+  it("lets the prover open a new round once its round is with the SECaaS", async () => {
+    const { id } = await setup(3, 2);
+    await ethers.provider.send("hardhat_mine", ["0x10"]);
+    await am.connect(robots[0]).Expire(id);
+    await expect(am.connect(robots[0]).SendEvidence(ethers.encodeBytes32String("next"), REF, 1)).to.emit(am, "ReadyForEvaluation");
+  });
+
   it("does not expire a closed or unknown cycle", async () => {
     const { id, jury } = await setup(3, 2);
     await am.connect(jury[0]).Vote(id, true);

@@ -66,6 +66,11 @@ contract AttestationManagerV3 {
     address[] private eligible;
     mapping(address => uint256) private eligibleSlot;
 
+    // Last round of each prover. A prover may open a new round only once
+    // this one is closed or with the SECaaS, so it cannot draw several juries
+    // for the same state and keep the last verdict.
+    mapping(address => bytes32) private lastRound;
+
     event AgentRegistered(address agent);
     event AgentRemoved(address agent);
     event AttestationStarted(bytes32 id, uint32 iterCount);
@@ -223,6 +228,10 @@ contract AttestationManagerV3 {
         require(currentAgent.registered, "SendEvidence : Agent is not registered");
         require(iterCount >= 1 && iterCount <= MAX_ITER_COUNT, "SendEvidence : iterCount out of range");
         require(referenceOf[msg.sender] != bytes32(0), "SendEvidence : no reference anchored for this agent");
+        MutualAttestation storage last = attestation[lastRound[msg.sender]];
+        require(last.prover == address(0) || last.state == AttestationState.Closed || last.verifier == secaas,
+                "SendEvidence : prover has an open round");
+        lastRound[msg.sender] = id;
 
         MutualAttestation storage currentAttestation = attestation[id];
         currentAttestation.id = id;
