@@ -4,7 +4,9 @@
 Usage: tools/measure_cycle.py <label> <start.sh arguments...>
 Starts the stack with 4 robots, waits WARMUP s, measures for WINDOW s, stops
 it and prints one JSON line. Cycle times come from the provers' logs, the
-transactions from the blocks of the window (reverted ones included).
+transactions from the blocks of the window (reverted ones included). Ledger
+growth: the RLP size of the blocks of the window, and the growth of the data
+directory of one validator.
 """
 import json
 import os
@@ -26,6 +28,13 @@ SIGS = ["SendEvidence(bytes32,bytes32,uint32)", "Vote(bytes32,bool)", "Expire(by
 SELECTOR = {"0x" + keccak(text=s)[:4].hex(): s.split("(")[0] for s in SIGS}
 COMPLETED = "0x" + keccak(text="AttestationCompleted(bytes32)").hex()
 DONE = re.compile(r"\[Prover-[^\]]+\] completed in ([\d.]+)s")
+VALIDATOR = "quorum-test-network-validator1-1"
+
+
+def datadir_bytes():
+    out = subprocess.run(["docker", "exec", VALIDATOR, "du", "-sb", "/opt/besu/data"],
+                         capture_output=True, text=True, check=True).stdout
+    return int(out.split()[0])
 
 
 def rpc(method, *params):
@@ -38,9 +47,9 @@ def rpc(method, *params):
 
 
 def measure(label, contract):
-    b0, t0 = int(rpc("eth_blockNumber"), 16), datetime.now(timezone.utc)
+    d0, b0, t0 = datadir_bytes(), int(rpc("eth_blockNumber"), 16), datetime.now(timezone.utc)
     time.sleep(WINDOW)
-    b1, t1 = int(rpc("eth_blockNumber"), 16), datetime.now(timezone.utc)
+    d1, b1, t1 = datadir_bytes(), int(rpc("eth_blockNumber"), 16), datetime.now(timezone.utc)
 
     durations = []
     for i in range(1, N + 1):
@@ -49,9 +58,12 @@ def measure(label, contract):
         durations += [float(d) for d in DONE.findall(logs.stdout + logs.stderr)]
 
     closes = rpc("eth_getLogs", {"fromBlock": hex(b0 + 1), "toBlock": hex(b1), "address": contract, "topics": [COMPLETED]})
-    sent, reverted, gas = {}, {}, 0
+    sent, reverted, gas, block_bytes, txs = {}, {}, 0, 0, 0
     for b in range(b0 + 1, b1 + 1):
-        for tx in rpc("eth_getBlockByNumber", hex(b), True)["transactions"]:
+        block = rpc("eth_getBlockByNumber", hex(b), True)
+        block_bytes += int(block["size"], 16)
+        txs += len(block["transactions"])
+        for tx in block["transactions"]:
             if (tx["to"] or "").lower() != contract.lower():
                 continue
             fn = SELECTOR.get(tx["input"][:10], tx["input"][:10])
@@ -67,7 +79,8 @@ def measure(label, contract):
         "cycle_s_mean": round(statistics.mean(durations), 2), "cycle_s_median": round(statistics.median(durations), 2),
         "cycle_s_p95": round(statistics.quantiles(durations, n=20)[-1], 2),
         "tx_per_cycle": round(sum(sent.values()) / n, 2), "reverted_per_cycle": round(sum(reverted.values()) / n, 2),
-        "gas_per_cycle": round(gas / n), "tx_by_function": sent, "reverted_by_function": {k: v for k, v in reverted.items() if v},
+        "gas_per_cycle": round(gas / n), "tx_per_block": round(txs / (b1 - b0), 2),
+        "block_bytes": block_bytes, "datadir_bytes": d1 - d0, "tx_by_function": sent, "reverted_by_function": {k: v for k, v in reverted.items() if v},
     }
 
 
