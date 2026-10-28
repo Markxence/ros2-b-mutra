@@ -203,6 +203,19 @@ func ProcessProverAttestation(
 			verifiedBy = "the jury" // V3: a jury cycle has no single verifier
 		}
 		logger.Info("%s Verified by: %s at %v", logPrefix, verifiedBy, ts)
+		if verifier == (common.Address{}) {
+			from, err := bc.TxBlockNumber(txHash)
+			if err == nil {
+				var votes string
+				votes, err = bc.JuryVotes(attestationID, from)
+				if err == nil {
+					logger.Info("%s Jury votes: %s", logPrefix, votes)
+				}
+			}
+			if err != nil {
+				logger.Error("%s Failed to read the jury votes: %v", logPrefix, err)
+			}
+		}
 	}
 
 	timestamps["p_prover_finished"] = utils.PerfNs()

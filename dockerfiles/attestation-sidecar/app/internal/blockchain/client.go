@@ -739,6 +739,62 @@ func (bc *BlockchainClient) PreviewJury(attID string) ([]common.Address, error) 
 	return unpackJury(bc.contractABI, res)
 }
 
+// JuryVotes describes the frozen jury of a V3 cycle and what each juror
+// voted, read from the VoteCast events from block from on, e.g.
+// "robot2=valid, robot3=invalid, robot4=no vote".
+func (bc *BlockchainClient) JuryVotes(attID string, from uint64) (string, error) {
+	attIDBytes, err := TextToBytes32(attID)
+	if err != nil {
+		return "", err
+	}
+	data, err := bc.contractABI.Pack("GetJury", attIDBytes)
+	if err != nil {
+		return "", err
+	}
+	res, err := bc.rawEthCall(nil, data)
+	if err != nil {
+		return "", err
+	}
+	jury, err := unpackJury(bc.contractABI, res) // GetJury returns address[] like PreviewJury
+	if err != nil {
+		return "", err
+	}
+	ev := bc.contractABI.Events["VoteCast"]
+	logs, err := bc.client.FilterLogs(context.Background(), ethereum.FilterQuery{
+		FromBlock: new(big.Int).SetUint64(from),
+		Addresses: []common.Address{bc.contractAddress},
+		Topics:    [][]common.Hash{{ev.ID}, {common.Hash(attIDBytes)}},
+	})
+	if err != nil {
+		return "", err
+	}
+	votes := make(map[common.Address]bool, len(logs))
+	for _, l := range logs {
+		vals, err := ev.Inputs.NonIndexed().UnpackValues(l.Data)
+		if err != nil {
+			return "", err
+		}
+		votes[common.BytesToAddress(l.Topics[2].Bytes())] = vals[0].(bool)
+	}
+	parts := make([]string, len(jury))
+	for i, j := range jury {
+		name, _, _, err := bc.GetAgentInfo(j)
+		if err != nil {
+			return "", err
+		}
+		verdict, voted := votes[j]
+		switch {
+		case !voted:
+			parts[i] = name + "=no vote"
+		case verdict:
+			parts[i] = name + "=valid"
+		default:
+			parts[i] = name + "=invalid"
+		}
+	}
+	return strings.Join(parts, ", "), nil
+}
+
 func unpackJury(contractABI abi.ABI, res []byte) ([]common.Address, error) {
 	values, err := contractABI.Unpack("PreviewJury", res)
 	if err != nil {
@@ -977,6 +1033,7 @@ func (bc *BlockchainClient) safeDisplay(n int) {
 		chain,
 		bc.GetAttestationInfo,
 		bc.GetAgentInfo,
+		func(attID string) (string, error) { return bc.JuryVotes(attID, 0) },
 		"0xed9d02e382b34818e88b88a309c7fe71e65f419d",
 		n,
 	)
