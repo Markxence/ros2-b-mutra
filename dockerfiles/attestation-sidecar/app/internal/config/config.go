@@ -70,6 +70,7 @@ type AppConfig struct {
 	IterQThreshold       uint32 // K = number of fresh measurements folded into one on-chain attestation
 	SelfIntegrityEnabled bool
 	SaltMeasurement      bool // send SHA256(m || salt) instead of m (contract V2)
+	ForceVerdict         *bool // experiment only: vote this verdict without comparing, nil = compare
 	
 	// ADDED: Storage for the auto-discovered integrity info
 	SelfIntegrity SelfIntegrityConfig 
@@ -141,6 +142,15 @@ func Load() (*AppConfig, error) {
 		EventBatchSize:     uint64(utils.GetEnvInt("EVENT_BATCH_SIZE", 1000)),
 		EventPollInterval:  utils.GetEnvFloat("EVENT_POLL_INTERVAL", 1.0),
 		EventLookback:      uint64(utils.GetEnvInt("EVENT_LOOKBACK_BLOCKS", 0)),
+	}
+
+	switch v := os.Getenv("FORCE_VERDICT"); v {
+	case "":
+	case "valid", "invalid":
+		forced := v == "valid"
+		appCfg.ForceVerdict = &forced
+	default:
+		return nil, fmt.Errorf("FORCE_VERDICT must be valid, invalid or unset, got %q", v)
 	}
 
 	if appCfg.ExportEnabled {

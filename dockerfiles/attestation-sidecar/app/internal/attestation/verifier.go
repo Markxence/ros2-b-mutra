@@ -30,6 +30,8 @@ type VerifierConfig struct {
 	EventBatchSize     uint64
 	EventPollInterval  float64
 	EventLookback      uint64
+
+	ForceVerdict *bool // experiment only: vote this verdict without comparing
 }
 
 // verificationJob represents a task in the worker queue
@@ -295,8 +297,10 @@ func processVerifierAttestation(
 	// freshSig is "0x"-prefixed (Web3 convention); derivedRef is bare hex.
 	freshNorm := strings.TrimPrefix(strings.ToLower(freshSig), "0x")
 	isSuccess := strings.EqualFold(freshNorm, derivedRef)
-	// For testing
-	// isSuccess = true
+	if cfg.ForceVerdict != nil {
+		isSuccess = *cfg.ForceVerdict
+		logger.Info("%s Verdict forced to %v (FORCE_VERDICT)", logPrefix, isSuccess)
+	}
 
 	timestamps["p_verify_compute_finished"] = utils.PerfNs()
 	timestamps["verify_compute_finished"] = utils.NowMs()
