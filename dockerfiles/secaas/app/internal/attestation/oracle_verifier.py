@@ -176,6 +176,58 @@ def process_secaas_attestation(
         import traceback
         debug(traceback.format_exc())
         
+def run_expiry_logic(app: FastAPI, stop_event: Optional[threading.Event] = None):
+    """V3: expire the jury cycles still waiting for votes after the jury timeout.
+    The prover expires its own cycle too; this covers a prover that went down.
+    The expired cycle then reaches the SECaaS through AttestationStarted."""
+    blockchain_client = app.state.blockchain_client
+    evt_enum = AttestationManagerContractEvents.READY_FOR_EVALUATION
+    watcher = EventWatcher(
+        web3            = blockchain_client.web3,
+        contract        = blockchain_client.contract,
+        event_abi       = blockchain_client.get_event_abi(evt_enum),
+        address         = blockchain_client.contract.address,
+        topics          = [blockchain_client.get_event_topic(evt_enum)],
+        checkpoint_path = os.path.join(app.state.event_checkpoint_dir, "ready_cp_secaas.json"),
+        confirmations   = app.state.event_confirmations,
+        batch_size      = app.state.event_batch_size,
+        poll_interval   = app.state.event_poll_interval,
+    )
+    timeout_blocks = blockchain_client.jury_timeout_blocks()
+    pending: Dict[str, int] = {}  # attestation id -> block of its evidence
+    lock = threading.Lock()
+
+    def handle(evt):
+        attestation_id = Web3.to_text(evt['args']['id']).rstrip('\x00').strip()
+        with lock:
+            pending[attestation_id] = evt['blockNumber']
+
+    def expire_due():
+        while not _should_stop(stop_event):
+            head = blockchain_client.web3.eth.block_number
+            with lock:
+                # Gas estimation runs at the head block, so wait for head = evidence + timeout.
+                due = [i for i, b in pending.items() if head >= b + timeout_blocks]
+            for attestation_id in due:
+                log_prefix = f"[SECaaS-{helpers.short_att_id(attestation_id)}]"
+                if blockchain_client.get_attestation_state(attestation_id) == AttestationState.ReadyForEvaluation:
+                    try:
+                        blockchain_client.expire(attestation_id, wait=True)
+                        info(f"{log_prefix} Jury timeout reached, cycle {attestation_id} expired by the SECaaS")
+                    except Exception as e:
+                        # The jury or the prover may have acted first: the state is read again next round.
+                        warn(f"{log_prefix} Expire not sent: {e}")
+                        continue
+                with lock:
+                    pending.pop(attestation_id, None)
+            time.sleep(app.state.event_poll_interval)
+
+    t = threading.Thread(target=expire_due, name="SECaaS-expiry", daemon=True)
+    t.start()
+    info(f"Expiring jury cycles left without a verdict after {timeout_blocks} blocks")
+    watcher.run(handle, stop_event=stop_event)
+    t.join(timeout=30)
+
 def run_secaas_logic(app: FastAPI, stop_event: Optional[threading.Event] = None):
     # Build blockchain_event_watcher for AttestationStarted
     evt_enum = AttestationManagerContractEvents.ATTESTATION_STARTED

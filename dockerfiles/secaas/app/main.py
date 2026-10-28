@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.internal.logger import init_logging, info, warn, error, debug, green_text
 from app.internal.utils import helpers
 from app.internal.blockchain.client import BlockchainClient
-from app.internal.attestation.oracle_verifier import run_secaas_logic
+from app.internal.attestation.oracle_verifier import run_secaas_logic, run_expiry_logic
 from app.internal.database.client import DatabaseClient
 
 # -----------------------------------------------------------------------------
@@ -71,6 +71,10 @@ def start_attestation(app: FastAPI):
     t = threading.Thread(target=run_secaas_logic, args=(app, app.state.stop_event), name="SECaaS", daemon=True)
     t.start()
     app.state.threads.append(t)
+    if app.state.blockchain_client.has_jury():
+        t = threading.Thread(target=run_expiry_logic, args=(app, app.state.stop_event), name="SECaaS-expiry-watch", daemon=True)
+        t.start()
+        app.state.threads.append(t)
 
 def stop_attestation(app: FastAPI):
 
@@ -384,4 +388,4 @@ async def shutdown():
     
     if hasattr(app.state, "db_client"):
         app.state.db_client.close()
-        info("Database connection closed during shutdown.")
+        info("Database connection closed during shutdown.")

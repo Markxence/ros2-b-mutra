@@ -259,6 +259,18 @@ class BlockchainClient:
         except Exception as e:
             raise Exception(f"An error occurred while calling the function: {str(e)}")
 
+    def has_jury(self) -> bool:
+        """True for a jury contract (V3), which has Expire."""
+        return any(e.get("type") == "function" and e.get("name") == "Expire" for e in self.contract.abi)
+
+    def jury_timeout_blocks(self) -> int:
+        return self.contract.functions.juryTimeoutBlocks().call()
+
+    def expire(self, attestation_id: str, wait: bool = True, timeout: int = 60) -> str:
+        """Hands a V3 jury cycle to the SECaaS once its timeout has passed."""
+        tx_data = self.contract.functions.Expire(text_to_bytes32(attestation_id)).build_transaction({'from': self.eth_address})
+        return self._send_tx(tx_data, wait=wait, timeout=timeout)
+
     def set_secaas_only(self, enabled: bool, wait: bool = True, timeout: int = 60):
         try:
             tx_data = self.contract.functions.SetSecaasOnly(enabled).build_transaction({'from': self.eth_address})

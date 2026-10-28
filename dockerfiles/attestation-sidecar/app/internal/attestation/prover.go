@@ -234,7 +234,7 @@ func ProcessProverAttestation(
 	}
 }
 
-// expireIfDue sends Expire once the next block reaches the jury timeout of
+// expireIfDue sends Expire once the head block reaches the jury timeout of
 // the cycle. Returns true once Expire has been tried, whatever its outcome:
 // a revert means the jury closed the cycle in the meantime.
 func expireIfDue(bc *blockchain.BlockchainClient, attID, txHash string, expireAt *uint64, logPrefix string) bool {
@@ -250,8 +250,9 @@ func expireIfDue(bc *blockchain.BlockchainClient, attID, txHash string, expireAt
 		}
 		*expireAt = seed + timeout
 	}
+	// Gas is estimated at the head block, so wait for head = evidence + timeout.
 	head, err := bc.BlockNumber()
-	if err != nil || head+1 < *expireAt {
+	if err != nil || head < *expireAt {
 		return false
 	}
 	if _, err := bc.Expire(attID, true, 60); err != nil {
