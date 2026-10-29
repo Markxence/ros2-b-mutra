@@ -432,4 +432,28 @@ describe("AttestationManagerV3: closure and expiry", function () {
     expect(await eligible(jury[0])).to.equal(false);
     expect(await eligible(jury[1])).to.equal(true);
   });
+
+  it("takes the eligibility of the jurors that did not vote before the expiry, until their next success", async () => {
+    const { id, jury } = await setup(3, 2);
+    await am.connect(jury[0]).Vote(id, true);
+    await ethers.provider.send("hardhat_mine", ["0x10"]);
+    const tx = am.connect(robots[0]).Expire(id);
+    await expect(tx).to.emit(am, "JurorAbsent").withArgs(id, jury[1].address);
+    await expect(tx).to.emit(am, "JurorAbsent").withArgs(id, jury[2].address);
+    expect(await eligible(jury[0])).to.equal(true);
+    for (const j of jury.slice(1)) {
+      expect(await eligible(j)).to.equal(false);
+      expect(await neverDrawn(j)).to.equal(true);
+    }
+    await settle(am, secaas, robots, await evidence(jury[1]), true);
+    expect(await eligible(jury[1])).to.equal(true);
+  });
+
+  it("names the whole jury absent when no one voted", async () => {
+    const { id, jury } = await setup(3, 2);
+    await ethers.provider.send("hardhat_mine", ["0x10"]);
+    await am.connect(robots[0]).Expire(id);
+    expect([...(await am.GetJury(id))[0]]).to.deep.equal(jury.map((j) => j.address));
+    for (const j of jury) expect(await eligible(j)).to.equal(false);
+  });
 });

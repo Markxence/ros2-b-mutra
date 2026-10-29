@@ -78,6 +78,7 @@ contract AttestationManagerV3 {
     event AttestationCompleted(bytes32 id);
     event VoteCast(bytes32 indexed id, address indexed juror, bool verdict);
     event JurorDissent(bytes32 indexed id, address indexed juror);
+    event JurorAbsent(bytes32 indexed id, address indexed juror);
     event ChainReset();
     event ReferenceApproved(address indexed agent, bytes32 newReference, address indexed admin);
     event ReferenceSet(address indexed agent, bytes32 oldReference, bytes32 newReference, uint256 version);
@@ -296,6 +297,23 @@ contract AttestationManagerV3 {
         require(a.state != AttestationState.Closed, "Expire : cycle closed");
         require(a.verifier != secaas, "Expire : cycle is with the SECaaS");
         require(block.number >= a.seedBlock + juryTimeoutBlocks, "Expire : timeout not reached");
+        // The jurors that did not vote lose their eligibility until their next
+        // success. Without a vote the jury was never frozen: draw it now, from
+        // the eligible list of this block. Past 256 blocks the evidence block
+        // hash is gone and no one can be named absent.
+        if (!a.juryDrawn) {
+            bytes32 blockHash = blockhash(a.seedBlock);
+            if (blockHash != bytes32(0)) {
+                a.jury = DrawJury(keccak256(abi.encode(blockHash, id)), a.prover);
+                a.juryDrawn = true;
+            }
+        }
+        for (uint256 i = 0; i < a.jury.length; i++) {
+            if (a.vote[a.jury[i]] == 0) {
+                _setEligible(a.jury[i], false);
+                emit JurorAbsent(id, a.jury[i]);
+            }
+        }
         _toSecaas(id);
     }
 
