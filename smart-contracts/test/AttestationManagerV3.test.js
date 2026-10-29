@@ -368,6 +368,14 @@ describe("AttestationManagerV3: closure and expiry", function () {
     await expect(again("after close")).to.emit(am, "ReadyForEvaluation");
   });
 
+  it("rejects an id already used, by the same prover or another", async () => {
+    const { id, jury } = await setup(3, 2);
+    await am.connect(jury[0]).Vote(id, true);
+    await am.connect(jury[1]).Vote(id, true);
+    await expect(am.connect(robots[0]).SendEvidence(id, REF, 1)).to.be.revertedWith("SendEvidence : id already used");
+    await expect(am.connect(robots[1]).SendEvidence(id, REF, 1)).to.be.revertedWith("SendEvidence : id already used");
+  });
+
   it("lets the prover open a new round once its round is with the SECaaS", async () => {
     const { id } = await setup(3, 2);
     await ethers.provider.send("hardhat_mine", ["0x10"]);

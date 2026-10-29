@@ -231,6 +231,8 @@ contract AttestationManagerV3 {
         MutualAttestation storage last = attestation[lastRound[msg.sender]];
         require(last.prover == address(0) || last.state == AttestationState.Closed || last.verifier == secaas,
                 "SendEvidence : prover has an open round");
+        // A reused id would overwrite the record of its cycle, votes included.
+        require(attestation[id].prover == address(0), "SendEvidence : id already used");
         lastRound[msg.sender] = id;
 
         MutualAttestation storage currentAttestation = attestation[id];
