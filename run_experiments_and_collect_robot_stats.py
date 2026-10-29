@@ -29,7 +29,6 @@ from pathlib import Path
 import requests
 
 COLLECTOR_URL    = "http://localhost:7001"
-SECAAS_URL       = "http://localhost:8000"
 SECAAS_PORT      = 8000
 ROBOTS_BASE_PORT = 8001
 COLLECTOR_ROBOT  = 1   # single robot whose topic is recorded and attested
@@ -160,13 +159,6 @@ def stop_all(sidecars):
         for f in as_completed(futs):
             print(f"      {f.result()}")
 
-
-def reset_chain():
-    try:
-        requests.post(f"{SECAAS_URL}/reset", timeout=10)
-        print("   [Chain] Reset.")
-    except Exception as e:
-        print(f"   [Chain] ⚠️ {e}")
 
 
 
