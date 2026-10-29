@@ -23,7 +23,7 @@ contract AttestationManagerV3 {
         uint256 seedBlock; // block holding the evidence: its hash seeds the jury draw
         bool juryDrawn;    // the jury is drawn and frozen at the first vote
         address[] jury;
-        mapping(address => bool) voted;
+        mapping(address => uint8) vote; // per juror: 0 no vote, 1 against, 2 for
         uint8 votesFor;
         uint8 votesAgainst;
         uint32 iterCount; // IterQ depth: number of nested SHA-256 folds
@@ -273,13 +273,14 @@ contract AttestationManagerV3 {
             a.juryDrawn = true;
         }
         require(_contains(a.jury, msg.sender), "Vote : caller is not in the jury");
-        require(!a.voted[msg.sender], "Vote : already voted");
+        require(a.vote[msg.sender] == 0, "Vote : already voted");
 
-        a.voted[msg.sender] = true;
+        a.vote[msg.sender] = verdict ? 2 : 1;
         if (verdict) a.votesFor++; else a.votesAgainst++;
         emit VoteCast(id, msg.sender, verdict);
 
         if (a.votesFor >= juryThreshold || a.votesAgainst >= juryThreshold) {
+            a.verifier = msg.sender; // the juror whose vote closed the cycle, for GetAttestationInfo
             _close(id, a.votesFor >= juryThreshold);
         } else if (a.votesFor + a.votesAgainst == a.jury.length) {
             _toSecaas(id);
@@ -320,9 +321,13 @@ contract AttestationManagerV3 {
         emit AttestationCompleted(id);
     }
 
-    // The frozen jury of a cycle, empty before its first vote.
-    function GetJury(bytes32 id) public view returns (address[] memory) {
-        return attestation[id].jury;
+    // The frozen jury of a cycle and each juror's vote (0 no vote, 1 against,
+    // 2 for), both empty before the first vote.
+    function GetJury(bytes32 id) public view returns (address[] memory jurors, uint8[] memory votes) {
+        MutualAttestation storage a = attestation[id];
+        jurors = a.jury;
+        votes = new uint8[](jurors.length);
+        for (uint256 i = 0; i < jurors.length; i++) votes[i] = a.vote[jurors[i]];
     }
 
     function GetProverAddress(bytes32 id, address callAddress) public view returns (address) {
@@ -332,13 +337,11 @@ contract AttestationManagerV3 {
         return currentAttestation.prover;
     }
 
-    function GetAttestationSignatures(bytes32 id, address callAddress) public view returns (bytes32, bytes32, uint32) {
+    // The evidence and the anchored reference are public on chain anyway, so
+    // anyone may read them. The caller argument stays for ABI compatibility.
+    function GetAttestationSignatures(bytes32 id, address) public view returns (bytes32, bytes32, uint32) {
         MutualAttestation storage currentAttestation = attestation[id];
-        // A jury cycle has no verifier: its jurors read the evidence instead.
-        bool juror = currentAttestation.prover != address(0) && currentAttestation.verifier == address(0) &&
-            _contains(currentAttestation.juryDrawn ? currentAttestation.jury : PreviewJury(id), callAddress);
-        require(juror || (callAddress != address(0) && currentAttestation.verifier == callAddress),
-            "Only the verifier can retrieve the signatures");
+        require(currentAttestation.prover != address(0), "Unknown attestation");
         require(
             currentAttestation.state == AttestationState.ReadyForEvaluation ||
             currentAttestation.verifier == secaas,

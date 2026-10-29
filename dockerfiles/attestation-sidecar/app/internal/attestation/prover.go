@@ -16,7 +16,6 @@ import (
 	"app/internal/storage"
 	"app/internal/utils"
 
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // SelfIntegrityInfo holds self-integrity check configuration
@@ -199,22 +198,23 @@ func ProcessProverAttestation(
 		logger.Info("%s Attestation Complete", logPrefix)
 		logger.Info("%s Result: %s", logPrefix, statusIcon)
 		verifiedBy := verifier.Hex()
-		if verifier == (common.Address{}) {
-			verifiedBy = "the jury" // V3: a jury cycle has no single verifier
-		}
-		logger.Info("%s Verified by: %s at %v", logPrefix, verifiedBy, ts)
-		if verifier == (common.Address{}) {
-			from, err := bc.TxBlockNumber(txHash)
-			if err == nil {
-				var votes string
-				votes, err = bc.JuryVotes(attestationID, from)
-				if err == nil {
-					logger.Info("%s Jury votes: %s", logPrefix, votes)
-				}
-			}
+		votes := ""
+		if bc.HasJury() {
+			// V3: a cycle closed by its jury names the juror whose vote closed it
+			jurors, summary, err := bc.JuryVotes(attestationID)
 			if err != nil {
 				logger.Error("%s Failed to read the jury votes: %v", logPrefix, err)
 			}
+			for _, j := range jurors {
+				if j == verifier {
+					verifiedBy = "the jury, closing vote from " + verifier.Hex()
+				}
+			}
+			votes = summary
+		}
+		logger.Info("%s Verified by: %s at %v", logPrefix, verifiedBy, ts)
+		if votes != "" {
+			logger.Info("%s Jury votes: %s", logPrefix, votes)
 		}
 	}
 

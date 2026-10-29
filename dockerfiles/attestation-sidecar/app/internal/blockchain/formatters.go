@@ -89,20 +89,21 @@ func BuildAttestationChainTable(
 
 		// Verifier Info
 		verifierName := ""
-		if verifierAddr == (common.Address{}) {
-			// V3: a jury cycle has no single verifier
-			votes, err := juryVotes(attID)
-			if err != nil {
-				votes = fmt.Sprintf("ERROR: %v", err)
-			}
-			verifierName = "jury: " + votes
-		} else if verifierAddr == secaasAddr {
+		if verifierAddr == secaasAddr {
 			verifierName = "SECaaS"
 		} else {
 			vName, _, _, _ := getAgentInfo(verifierAddr)
 			verifierName = vName
 		}
 		verifierInfo := fmt.Sprintf("%s - %s", verifierName, verifierAddr.Hex())
+		// V3: the verifier is the juror whose vote closed the cycle, or the SECaaS
+		votes, err := juryVotes(attID)
+		if err != nil {
+			votes = fmt.Sprintf("ERROR: %v", err)
+		}
+		if votes != "" {
+			verifierInfo += " | jury: " + votes
+		}
 
 		// Add Row
 		table.Append([]string{

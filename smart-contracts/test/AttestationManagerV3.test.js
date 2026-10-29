@@ -230,7 +230,7 @@ describe("AttestationManagerV3: vote", function () {
     for (const r of robots.filter((r) => r !== robots[0] && !jury.includes(r.address)).slice(0, 2)) {
       await close(await evidence(r), false);
     }
-    expect([...(await am.GetJury(id))]).to.deep.equal(jury);
+    expect([...(await am.GetJury(id))[0]]).to.deep.equal(jury);
     await expect(am.connect(signer(jury[1])).Vote(id, true)).to.emit(am, "VoteCast");
   });
 });
@@ -327,13 +327,25 @@ describe("AttestationManagerV3: closure and expiry", function () {
     expect(await result(id)).to.equal(FAILURE);
   });
 
-  it("lets the jurors read the evidence, and no one else", async () => {
+  it("lets a juror read the evidence before voting", async () => {
     const { id, jury } = await setup(3, 2);
     const [fresh, ref, iter] = await am.GetAttestationSignatures(id, jury[0].address);
     expect([fresh, ref, iter]).to.deep.equal([REF, REF, 1n]);
-    const outsider = robots.find((r) => r !== robots[0] && !jury.includes(r));
-    await expect(am.GetAttestationSignatures(id, outsider.address)).to.be.revertedWith("Only the verifier can retrieve the signatures");
-    await expect(am.GetAttestationSignatures(id, ethers.ZeroAddress)).to.be.revertedWith("Only the verifier can retrieve the signatures");
+    await expect(am.GetAttestationSignatures(ethers.encodeBytes32String("none"), jury[0].address))
+      .to.be.revertedWith("Unknown attestation");
+  });
+
+  it("gives the jurors and their votes, and the closing juror as verifier", async () => {
+    const { id, jury } = await setup(3, 2);
+    const votes = async () => [...(await am.GetJury(id))[1]].map(Number);
+    expect([...(await am.GetJury(id))[0]]).to.deep.equal([]);
+    await am.connect(jury[0]).Vote(id, false);
+    expect([...(await am.GetJury(id))[0]]).to.deep.equal(jury.map((j) => j.address));
+    expect(await votes()).to.deep.equal([1, 0, 0]);
+    await am.connect(jury[1]).Vote(id, true);
+    await am.connect(jury[2]).Vote(id, true);
+    expect(await votes()).to.deep.equal([1, 2, 2]);
+    expect((await am.GetAttestationInfo(id))[1]).to.equal(jury[2].address);
   });
 
   // Mines until the latest block is n, so that the next transaction goes in n + 1.
