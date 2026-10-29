@@ -263,6 +263,10 @@ class BlockchainClient:
         """True for a jury contract (V3), which has Expire."""
         return any(e.get("type") == "function" and e.get("name") == "Expire" for e in self.contract.abi)
 
+    def has_anchored_reference(self) -> bool:
+        """True for V2 and V3, where the admins anchor each agent's reference on chain."""
+        return any(e.get("type") == "function" and e.get("name") == "referenceOf" for e in self.contract.abi)
+
     def jury_timeout_blocks(self) -> int:
         return self.contract.functions.juryTimeoutBlocks().call()
 

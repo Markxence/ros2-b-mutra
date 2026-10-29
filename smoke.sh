@@ -20,7 +20,15 @@ no_failure() {  # no_failure <first robot> <message suffix>
 }
 
 trap "./stop.sh >/dev/null 2>&1" EXIT
-./start.sh --robots $N --contract "$CONTRACT" --ssp 10000 --iterq 1 --auto >/dev/null
+./start.sh --robots $N --contract "$CONTRACT" --ssp 10000 --iterq 1 >/dev/null
+# V2 and V3 anchor the references on chain: the SECaaS must not need its
+# database to verify, so it is made wrong before any cycle runs.
+if [[ "$CONTRACT" == v[23] ]]; then
+  docker exec attestation-db psql -U postgres -d attestation -qc "UPDATE measures SET combined_hash = repeat('0', 64)"
+  echo "ok: SECaaS database made wrong on purpose"
+fi
+curl -fsS -X POST "http://localhost:8000/start" >/dev/null
+for i in $(seq 1 $N); do curl -fsS -X POST "http://localhost:$((8000 + i))/start" >/dev/null; done
 
 wait_for 120 all_succeeded || { echo "FAIL: not every robot attested successfully within 120 s"; exit 1; }
 no_failure 1 "failed attestation before any tampering"
@@ -54,6 +62,9 @@ if [[ "$CONTRACT" == v[23] ]]; then
   (( $(docker logs secaas 2>&1 | grep -c "ref. measurement sent" || true) == 0 )) \
     || { echo "FAIL: the SECaaS still supplied a reference"; exit 1; }
   echo "ok: the SECaaS supplied no reference"
+  resolved=$(docker logs secaas 2>&1 | grep -c "Resolved atomically (result: .*SUCCESS" || true)
+  (( resolved >= 1 )) || { echo "FAIL: the SECaaS verified no cycle"; exit 1; }
+  echo "ok: the SECaaS verified $resolved cycles against the anchored reference, despite its wrong database"
 fi
 
 ./tools/tamper.sh robot1 >/dev/null

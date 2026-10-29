@@ -77,7 +77,11 @@ def process_secaas_attestation(
             timestamps["get_signatures_start"] = helpers.now_ms()
             timestamps["p_get_signatures_start"] = helpers.perf_ns()
 
-            fresh_sig_hex, _, iter_count = blockchain_client.get_attestation_signatures(attestation_id)
+            fresh_sig_hex, chain_ref_hex, iter_count = blockchain_client.get_attestation_signatures(attestation_id)
+            # V2 and V3 anchor the reference on chain: compare against it, so a
+            # wrong or tampered SECaaS database cannot change the verdict.
+            if blockchain_client.has_anchored_reference():
+                ref_hash = chain_ref_hex
 
             timestamps["p_get_signatures_finished"] = helpers.perf_ns()
             timestamps["get_signatures_finished"] = helpers.now_ms()
