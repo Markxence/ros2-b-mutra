@@ -77,6 +77,7 @@ contract AttestationManagerV3 {
     event ReadyForEvaluation(bytes32 id);
     event AttestationCompleted(bytes32 id);
     event VoteCast(bytes32 indexed id, address indexed juror, bool verdict);
+    event JurorDissent(bytes32 indexed id, address indexed juror);
     event ChainReset();
     event ReferenceApproved(address indexed agent, bytes32 newReference, address indexed admin);
     event ReferenceSet(address indexed agent, bytes32 oldReference, bytes32 newReference, uint256 version);
@@ -318,6 +319,15 @@ contract AttestationManagerV3 {
         a.timestamp = block.timestamp;
         a.result = verified ? AttestationResult.Success : AttestationResult.Failure;
         _setEligible(a.prover, verified);
+        // A juror that voted against the verdict, of the jury or of the SECaaS,
+        // loses its eligibility until its next success.
+        uint8 against = verified ? 1 : 2;
+        for (uint256 i = 0; i < a.jury.length; i++) {
+            if (a.vote[a.jury[i]] == against) {
+                _setEligible(a.jury[i], false);
+                emit JurorDissent(id, a.jury[i]);
+            }
+        }
         emit AttestationCompleted(id);
     }
 

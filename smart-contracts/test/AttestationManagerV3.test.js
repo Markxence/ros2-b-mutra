@@ -403,4 +403,33 @@ describe("AttestationManagerV3: closure and expiry", function () {
     await expect(am.Expire(id)).to.be.revertedWith("Expire : cycle closed");
     await expect(am.Expire(ethers.encodeBytes32String("none"))).to.be.revertedWith("Expire : unknown cycle");
   });
+
+  // True when robot r is drawn in none of 50 juries seeded at random.
+  async function neverDrawn(r) {
+    for (let k = 0; k < 50; k++) {
+      if ((await am.DrawJury(ethers.id(`seed${k}`), robots[0].address)).includes(r.address)) return false;
+    }
+    return true;
+  }
+
+  it("takes the eligibility of a juror that voted against the verdict, until its next success", async () => {
+    const { id, jury } = await setup(3, 2);
+    await am.connect(jury[0]).Vote(id, false);
+    await am.connect(jury[1]).Vote(id, true);
+    await expect(am.connect(jury[2]).Vote(id, true)).to.emit(am, "JurorDissent").withArgs(id, jury[0].address);
+    expect(await eligible(jury[0])).to.equal(false);
+    expect(await eligible(jury[1])).to.equal(true);
+    expect(await neverDrawn(jury[0])).to.equal(true);
+    await settle(am, secaas, robots, await evidence(jury[0]), true);
+    expect(await eligible(jury[0])).to.equal(true);
+  });
+
+  it("takes the eligibility of a juror that voted against the SECaaS verdict", async () => {
+    const { id, jury } = await setup(2, 2);
+    await am.connect(jury[0]).Vote(id, true);
+    await am.connect(jury[1]).Vote(id, false); // a tie goes to the SECaaS
+    await expect(am.connect(secaas).ResolveAttestationSECaaS(id, false)).to.emit(am, "JurorDissent").withArgs(id, jury[0].address);
+    expect(await eligible(jury[0])).to.equal(false);
+    expect(await eligible(jury[1])).to.equal(true);
+  });
 });
