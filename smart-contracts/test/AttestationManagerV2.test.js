@@ -57,6 +57,17 @@ describe("AttestationManagerV2: anchored reference", function () {
     await am.connect(a2).SetReference(robot.address, b32("evil"));
     expect(await am.referenceOf(robot.address)).to.equal(b32("v1"));
   });
+
+  it("resets the chain only with the approval of 2 admins, never the SECaaS alone", async () => {
+    await expect(am.connect(secaas).ResetChain()).to.be.revertedWith("ResetChain : caller is not an admin");
+    await expect(am.connect(robot).ResetChain()).to.be.revertedWith("ResetChain : caller is not an admin");
+    await expect(am.connect(a1).ResetChain()).to.emit(am, "ResetApproved").and.not.to.emit(am, "ChainReset");
+    await expect(am.connect(a1).ResetChain()).to.be.revertedWith("ResetChain : already approved by this admin");
+    await expect(am.connect(a2).ResetChain()).to.emit(am, "ChainReset");
+    // The approvals are spent: the next reset needs 2 new ones.
+    await expect(am.connect(a3).ResetChain()).not.to.emit(am, "ChainReset");
+    await expect(am.connect(a1).ResetChain()).to.emit(am, "ChainReset");
+  });
 });
 
 // Brings a contract to the point where robot A is an eligible peer verifier:

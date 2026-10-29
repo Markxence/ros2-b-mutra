@@ -79,8 +79,14 @@ describe("AttestationManagerV3: eligible agents", function () {
     await cycle(robotB, true);
     await am.connect(robotA).RemoveAgent();
     expect(await eligible()).to.deep.equal([robotB.address]);
-    await am.connect(secaas).ResetChain();
+    await am.connect(a1).ResetChain();
     expect(await eligible()).to.deep.equal([]);
+  });
+
+  it("does not let the SECaaS reset the chain", async () => {
+    await cycle(robotA, true);
+    await expect(am.connect(secaas).ResetChain()).to.be.revertedWith("ResetChain : caller is not an admin");
+    expect(await eligible()).to.deep.equal([robotA.address]);
   });
 });
 

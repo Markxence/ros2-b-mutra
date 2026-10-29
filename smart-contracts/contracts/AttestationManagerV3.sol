@@ -52,6 +52,7 @@ contract AttestationManagerV3 {
     mapping(address => uint256) public referenceVersion;
     mapping(bytes32 => mapping(address => bool)) private approvedBy;
     mapping(bytes32 => uint256) private approvalCount;
+    uint256 public resetVersion; // approvals of a reset are bound to it, so they cannot be replayed
 
     // Verifier jury, fixed at deployment: jurySize jurors are drawn per cycle,
     // juryThreshold matching votes close it, and after juryTimeoutBlocks blocks
@@ -80,6 +81,7 @@ contract AttestationManagerV3 {
     event JurorDissent(bytes32 indexed id, address indexed juror);
     event JurorAbsent(bytes32 indexed id, address indexed juror);
     event ChainReset();
+    event ResetApproved(address indexed admin, uint256 version);
     event ReferenceApproved(address indexed agent, bytes32 newReference, address indexed admin);
     event ReferenceSet(address indexed agent, bytes32 oldReference, bytes32 newReference, uint256 version);
 
@@ -124,8 +126,18 @@ contract AttestationManagerV3 {
         emit ReferenceSet(agentAddress, oldReference, newReference, referenceVersion[agentAddress]);
     }
 
+    // The admins reset the chain together: the reset applies once
+    // adminThreshold distinct admins have approved it. The SECaaS cannot, so
+    // it can no longer hand itself the verifier role.
     function ResetChain() public {
-        require(msg.sender == secaas, "Only the SECaaS can reset the chain");
+        require(isAdmin[msg.sender], "ResetChain : caller is not an admin");
+        bytes32 proposal = keccak256(abi.encode("ResetChain", resetVersion));
+        require(!approvedBy[proposal][msg.sender], "ResetChain : already approved by this admin");
+        approvedBy[proposal][msg.sender] = true;
+        approvalCount[proposal]++;
+        emit ResetApproved(msg.sender, resetVersion);
+        if (approvalCount[proposal] < adminThreshold) return;
+        resetVersion++;
         while (eligible.length > 0) {
             delete eligibleSlot[eligible[eligible.length - 1]];
             eligible.pop();

@@ -685,6 +685,14 @@ anchor_references() {
     "$ADMIN_NODES_DIR/validator3/accountPrivateKey"
 }
 
+# V2 and V3 were just deployed, so there is nothing to reset, and only their
+# admins may reset them: the SECaaS reset is for the other contracts.
+reset_chain() {
+  [[ "$CONTRACT_VAL" == AttestationManagerV[23] ]] && return 0
+  echo "🧹 Resetting on-chain attestation chain..."
+  curl -s -X POST "$SECAAS_URL/reset" | jq .
+}
+
 # Host that publishes the HTTP port of robot <i>'s sidecar (8000 + i).
 sidecar_host() {
   if [[ "$DEPLOY_MODE" == "local" ]]; then
@@ -732,8 +740,7 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" ]]; then
     python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" \
         --sidecar-host "$SOURCE_HOST" --sync-secaas "${BOOTSTRAP_FLAGS[@]}" \
       && anchor_references \
-      && echo "🧹 Resetting on-chain attestation chain..." \
-      && curl -s -X POST "$SECAAS_URL/reset" | jq . \
+      && reset_chain \
       || echo "⚠️  Bootstrap failed — attestations may close as FAILURE."
   fi
 
