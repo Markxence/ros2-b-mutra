@@ -274,8 +274,9 @@ contract AttestationManagerV3 {
 
     // A juror gives its verdict. The first vote draws the jury and freezes it,
     // so that later changes to the eligible list do not change who may vote.
-    // juryThreshold matching votes close the cycle; a jury that has all voted
-    // without reaching it hands the cycle to the SECaaS.
+    // juryThreshold matching votes close the cycle. As soon as neither verdict
+    // can still reach it, the cycle goes to the SECaaS, whose verdict is final:
+    // with juryThreshold equal to jurySize, any disagreement goes there.
     function Vote(bytes32 id, bool verdict) public {
         MutualAttestation storage a = attestation[id];
         require(a.prover != address(0), "Vote : unknown cycle");
@@ -296,8 +297,9 @@ contract AttestationManagerV3 {
         if (a.votesFor >= juryThreshold || a.votesAgainst >= juryThreshold) {
             a.verifier = msg.sender; // the juror whose vote closed the cycle, for GetAttestationInfo
             _close(id, a.votesFor >= juryThreshold);
-        } else if (a.votesFor + a.votesAgainst == a.jury.length) {
-            _toSecaas(id);
+        } else {
+            uint256 left = a.jury.length - a.votesFor - a.votesAgainst;
+            if (a.votesFor + left < juryThreshold && a.votesAgainst + left < juryThreshold) _toSecaas(id);
         }
     }
 

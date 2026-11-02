@@ -82,6 +82,7 @@ Options:
                  v3 = v2 with a jury of verifiers)
   --jury N       v3 only: jurors drawn per cycle (default: 3)
   --quorum T     v3 only: matching votes that close a cycle, 1..N (default: 2)
+                 T = N: the SECaaS judges any disagreement, its verdict is final
   --iterq K      IterQ rolling-hash threshold: number of fresh measurements folded into
                  one on-chain attestation. K=1 = single-shot. Range: 1..10000 (default: 1)
   --no-cpu-limit Remove the CPU cgroup cap from sidecar containers entirely (uncapped).

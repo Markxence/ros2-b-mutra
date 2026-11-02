@@ -333,6 +333,29 @@ describe("AttestationManagerV3: closure and expiry", function () {
     expect(await result(id)).to.equal(FAILURE);
   });
 
+  // 3 of 3: the jury closes only when unanimous, the SECaaS judges any split.
+  it("3 of 3: closes on three matching votes", async () => {
+    const { id, jury } = await setup(3, 3);
+    await am.connect(jury[0]).Vote(id, true);
+    await am.connect(jury[1]).Vote(id, true);
+    expect(await am.GetAttestationState(id)).to.equal(1n); // ReadyForEvaluation
+    await expect(am.connect(jury[2]).Vote(id, true)).to.emit(am, "AttestationCompleted").withArgs(id);
+    expect(await result(id)).to.equal(SUCCESS);
+  });
+
+  it("3 of 3: hands a split to the SECaaS at once, whose verdict names the dissenter", async () => {
+    const { id, jury } = await setup(3, 3);
+    await am.connect(jury[0]).Vote(id, true);
+    await expect(am.connect(jury[1]).Vote(id, false)).to.emit(am, "AttestationStarted").withArgs(id, 1);
+    expect(await am.IsVerifier(id, secaas.address)).to.equal(true);
+    await expect(am.connect(jury[2]).Vote(id, true)).to.be.revertedWith("Vote : cycle is with the SECaaS");
+    await expect(am.connect(secaas).ResolveAttestationSECaaS(id, true)).to.emit(am, "JurorDissent").withArgs(id, jury[1].address);
+    expect(await result(id)).to.equal(SUCCESS);
+    expect(await eligible(jury[1])).to.equal(false);
+    expect(await eligible(jury[0])).to.equal(true);
+    expect(await eligible(jury[2])).to.equal(true); // did not vote, was not absent
+  });
+
   it("lets a juror read the evidence before voting", async () => {
     const { id, jury } = await setup(3, 2);
     const [fresh, ref, iter] = await am.GetAttestationSignatures(id, jury[0].address);
