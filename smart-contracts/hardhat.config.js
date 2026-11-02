@@ -4,7 +4,8 @@ require("dotenv").config();
 const { PRIVATE_KEY, RPC_URL, CHAIN_ID } = process.env;
 
 module.exports = {
-  solidity: "0.8.28",
+  // The optimizer keeps V3 under the 24576-byte limit on deployed code (#95).
+  solidity: { version: "0.8.28", settings: { optimizer: { enabled: true, runs: 200 } } },
   networks: {
     besu: {
       url: RPC_URL || "http://localhost:8545",
