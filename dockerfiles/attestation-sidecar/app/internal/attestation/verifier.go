@@ -235,10 +235,11 @@ func inJury(ctx context.Context, client *blockchain.BlockchainClient, attID stri
 	return selected, nil
 }
 
-// cycleClosed tells whether the other jurors already closed the cycle.
-func cycleClosed(client *blockchain.BlockchainClient, attID string) bool {
+// cycleLeftJury tells whether the cycle no longer waits for jury votes: the
+// other jurors closed it, or it went to the SECaaS (split vote or expiry).
+func cycleLeftJury(client *blockchain.BlockchainClient, attID string) bool {
 	state, err := client.GetAttestationState(attID)
-	return err == nil && state == blockchain.Closed
+	return err == nil && state != blockchain.ReadyForEvaluation
 }
 
 // processVerifierAttestation contains the core business logic
@@ -261,8 +262,8 @@ func processVerifierAttestation(
 	logPrefix := fmt.Sprintf("[Verifier-%s]", utils.ShortAttID(attestationID, 4))
 	if juror {
 		logPrefix = fmt.Sprintf("[Juror-%s]", utils.ShortAttID(attestationID, 4))
-		if cycleClosed(client, attestationID) {
-			logger.Info("%s Cycle already closed by the other jurors, no vote", logPrefix)
+		if cycleLeftJury(client, attestationID) {
+			logger.Info("%s Cycle already closed or with the SECaaS, no vote", logPrefix)
 			return
 		}
 	}
@@ -325,8 +326,8 @@ func processVerifierAttestation(
 		switch {
 		case err == nil:
 			logger.Info("%s Vote sent (verdict: %s)", logPrefix, statusIcon)
-		case cycleClosed(client, attestationID):
-			logger.Info("%s Cycle closed by the other jurors before this vote", logPrefix)
+		case cycleLeftJury(client, attestationID):
+			logger.Info("%s Cycle closed or handed to the SECaaS before this vote", logPrefix)
 		default:
 			logger.Error("%s Failed to vote: %v", logPrefix, err)
 		}
