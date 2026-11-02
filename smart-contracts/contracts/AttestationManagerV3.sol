@@ -30,6 +30,11 @@ contract AttestationManagerV3 {
                          // composing fresh_signature. Verifier must apply
                          // the same fold count to ref_signature before
                          // comparing. K=1 = single measurement (legacy).
+        // The pool at the evidence, so that the jury is drawn from the agents
+        // eligible then, whenever the draw happens (#94).
+        uint8 juryCount;         // jurors to draw, 0 when the SECaaS decides
+        uint32 flipSeqAt;        // flipSeq at the evidence
+        uint32 participantCount; // participants.length at the evidence
     }
 
     // IterQ bound: rejects accidental/malicious huge K that would burn
@@ -66,6 +71,12 @@ contract AttestationManagerV3 {
     // adding and removing cost the same whatever the number of agents.
     address[] private eligible;
     mapping(address => uint256) private eligibleSlot;
+    // Each change of eligibility gets the next flipSeq. An agent keeps the
+    // numbers of its last two changes, which tells its eligibility at an
+    // earlier evidence unless it changed twice since.
+    uint32 private flipSeq;
+    mapping(address => uint32) private flippedAt;
+    mapping(address => uint32) private flippedBefore;
 
     // Last round of each prover. A prover may open a new round only once
     // this one is closed or with the SECaaS, so it cannot draw several juries
@@ -138,16 +149,16 @@ contract AttestationManagerV3 {
         emit ResetApproved(msg.sender, resetVersion);
         if (approvalCount[proposal] < adminThreshold) return;
         resetVersion++;
-        while (eligible.length > 0) {
-            delete eligibleSlot[eligible[eligible.length - 1]];
-            eligible.pop();
-        }
+        while (eligible.length > 0) _setEligible(eligible[eligible.length - 1], false);
         emit ChainReset();
     }
 
     function _setEligible(address a, bool on) internal {
         uint256 slot = eligibleSlot[a];
         if (on == (slot != 0)) return;
+        flipSeq++;
+        flippedBefore[a] = flippedAt[a];
+        flippedAt[a] = flipSeq;
         if (on) {
             eligible.push(a);
             eligibleSlot[a] = eligible.length;
@@ -165,24 +176,47 @@ contract AttestationManagerV3 {
     }
 
     // Draws min(jurySize, eligible agents other than the prover) distinct
-    // jurors from seed. Returns an empty jury when fewer than juryThreshold
-    // can be drawn: the cycle then goes to the SECaaS. Indexes are drawn with
-    // rejection, without copying the list.
-    // ponytail: rejection loop, fine for a jury of a few agents; switch to a
-    // partial Fisher-Yates if jurySize gets close to the number of agents.
+    // jurors from seed, from the agents eligible now. Returns an empty jury
+    // when fewer than juryThreshold can be drawn: the cycle then goes to the
+    // SECaaS.
     function DrawJury(bytes32 seed, address prover) public view returns (address[] memory jury) {
-        uint256 size = _juryCount(prover);
+        (jury, ) = _draw(seed, prover, _juryCount(prover), flipSeq, participants.length);
+    }
+
+    // Draws size jurors among the first count participants, keeping those
+    // eligible when flipSeq was cutoff. Indexes run over participants, whose
+    // order does not change when eligibility does, so the draw does not
+    // depend on the changes made since. known is false when a drawn agent
+    // changed twice since the cutoff: its eligibility then is lost.
+    // ponytail: rejection loop, fine while most agents are eligible; RemoveAgent
+    // reorders participants, so a removal during an open cycle changes its draw.
+    function _draw(bytes32 seed, address prover, uint256 size, uint32 cutoff, uint256 count)
+        internal view returns (address[] memory jury, bool known)
+    {
         jury = new address[](size);
+        if (participants.length < count) return (jury, false);
         uint256 found = 0;
         for (uint256 k = 0; found < size; k++) {
-            address candidate = eligible[uint256(keccak256(abi.encode(seed, k))) % eligible.length];
+            require(k < 64 * count, "DrawJury : not enough eligible agents");
+            address candidate = participants[uint256(keccak256(abi.encode(seed, k))) % count];
             if (candidate == prover) continue;
+            bool now_ = eligibleSlot[candidate] != 0;
+            bool then_;
+            if (flippedAt[candidate] <= cutoff) then_ = now_;
+            else if (flippedBefore[candidate] <= cutoff) then_ = !now_;
+            else return (jury, false);
+            if (!then_) continue;
             bool taken = false;
             for (uint256 j = 0; j < found; j++) {
                 if (jury[j] == candidate) { taken = true; break; }
             }
             if (!taken) jury[found++] = candidate;
         }
+        return (jury, true);
+    }
+
+    function _cycleJury(MutualAttestation storage a, bytes32 blockHash) internal view returns (address[] memory, bool) {
+        return _draw(keccak256(abi.encode(blockHash, a.id)), a.prover, a.juryCount, a.flipSeqAt, a.participantCount);
     }
 
     // Number of jurors a cycle of prover gets, 0 when the SECaaS must decide.
@@ -201,7 +235,9 @@ contract AttestationManagerV3 {
         require(block.number > a.seedBlock, "PreviewJury : evidence block not sealed yet");
         bytes32 blockHash = blockhash(a.seedBlock);
         require(blockHash != bytes32(0), "PreviewJury : evidence block too old");
-        return DrawJury(keccak256(abi.encode(blockHash, id)), a.prover);
+        (address[] memory jury, bool known) = _cycleJury(a, blockHash);
+        require(known, "PreviewJury : a drawn agent changed eligibility twice since the evidence");
+        return jury;
     }
 
     function RegisterAgent(string memory name) public {
@@ -253,7 +289,11 @@ contract AttestationManagerV3 {
         currentAttestation.id = id;
         // A jury cycle has no single verifier: its jurors are drawn at the
         // first vote. The SECaaS verifies when no jury can be drawn.
-        currentAttestation.verifier = _juryCount(msg.sender) > 0 ? address(0) : secaas;
+        uint256 juryCount = _juryCount(msg.sender);
+        currentAttestation.verifier = juryCount > 0 ? address(0) : secaas;
+        currentAttestation.juryCount = uint8(juryCount);
+        currentAttestation.flipSeqAt = flipSeq;
+        currentAttestation.participantCount = uint32(participants.length);
         currentAttestation.prover = msg.sender;
         currentAttestation.fresh_signature = freshMeasurement;
         currentAttestation.result = AttestationResult.None;
@@ -313,13 +353,17 @@ contract AttestationManagerV3 {
         require(block.number >= a.seedBlock + juryTimeoutBlocks, "Expire : timeout not reached");
         // The jurors that did not vote lose their eligibility until their next
         // success. Without a vote the jury was never frozen: draw it now, from
-        // the eligible list of this block. Past 256 blocks the evidence block
-        // hash is gone and no one can be named absent.
+        // the agents eligible at the evidence. Past 256 blocks the evidence
+        // block hash is gone, and when the draw is unknown no one can be named
+        // absent either.
         if (!a.juryDrawn) {
             bytes32 blockHash = blockhash(a.seedBlock);
             if (blockHash != bytes32(0)) {
-                a.jury = DrawJury(keccak256(abi.encode(blockHash, id)), a.prover);
-                a.juryDrawn = true;
+                (address[] memory jury, bool known) = _cycleJury(a, blockHash);
+                if (known) {
+                    a.jury = jury;
+                    a.juryDrawn = true;
+                }
             }
         }
         for (uint256 i = 0; i < a.jury.length; i++) {

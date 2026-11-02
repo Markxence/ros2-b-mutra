@@ -296,6 +296,16 @@ describe("AttestationManagerV3: closure and expiry", function () {
     expect(await am.IsVerifier(ethers.encodeBytes32String("j"), secaas.address)).to.equal(false);
   });
 
+  // #94: the sidecars preview the jury once the evidence block is sealed, but
+  // the first vote drew it again from the eligible list of its own block.
+  it("keeps the previewed jury when the eligible list changes before the first vote", async () => {
+    const { id, jury } = await setup(3, 2);
+    const other = robots.find((r) => r !== robots[0] && !jury.includes(r));
+    await settle(am, secaas, robots, await evidence(other), false); // other leaves the eligible list
+    await am.connect(jury[0]).Vote(id, true);
+    await expect(am.connect(jury[1]).Vote(id, true)).to.emit(am, "AttestationCompleted").withArgs(id);
+  });
+
   it("closes on 2 votes for", async () => {
     const { id, jury } = await setup(3, 2);
     await am.connect(jury[0]).Vote(id, true);
