@@ -25,10 +25,9 @@ SSP, with intercept B (the irreducible blockchain cost). The old
 SUCCESS-anchored scheme instead produced L = ⌈B/P⌉·P (P = the loop period),
 a sawtooth that was non-monotonic and bimodal near SSP ≈ B.
 
-Contract support (LV and RR):
-  The script auto-detects the deployed contract from config/robot1.json's ABI
-  (SetSecaasOnly ⇒ AttestationManagerRR, otherwise AttestationManagerLV) and
-  adapts the warmup accordingly. Override with --contract rr|lv.
+Contract support (LV, RR, V2, V3):
+  The script reads the deployed contract from the CONTRACT line that start.sh
+  writes to .env, and adapts the warmup accordingly.
 
   - LV (root-of-trust): currentVerifier is the last successfully verified agent.
     Right after robot1 succeeds, currentVerifier == robot1, so robot1 cannot
@@ -43,16 +42,23 @@ Contract support (LV and RR):
     so verifier identity is deterministic and the 2-tx/3-tx race disappears.
     Recommended for clean detection-latency micro-benchmarks.
 
+  - V2: LV with the reference anchored on chain, so a peer closes in 2 tx.
+    Only its admins can reset it: the warmup calls reset_chain.sh.
+
+  - V3 (jury): a drawn jury closes the cycle, the SECaaS only when no jury can
+    be drawn or the jury times out. Reset through the admins, like V2.
+
 Prerequisites:
   - Stack started WITHOUT --auto. This script owns the sidecar lifecycle:
     it runs warmup_fleet + push_ssp before EVERY trial (not just once per
     block) so that each trial starts from the same on-chain state.
-      * LV: chain reset + one-shot warmup seeds currentVerifier to a real robot.
+      * LV, V2: chain reset + one-shot warmup seeds currentVerifier to a real robot.
+      * V3: chain reset + one-shot warmup makes every robot eligible as a juror.
       * RR: ResetChain sets secaasOnly=true; the one-shot warmup seeds every
         robot's lastSuccess via the SECaaS-only path, then the script flips
         /secaas-only=false so trials use peer (round-robin) verification.
   - ITERQ_THRESHOLD=1 in .env (or start.sh --iterq 1).
-  - Contract deployed via start.sh --contract lv|rr (auto-detected here).
+  - Contract deployed via start.sh --contract lv|rr|v2|v3 (read from .env here).
   - WAIT_FOR_VERIFICATION_RESULT=TRUE (default) so the prover sidecar
     logs the verifier's verdict; otherwise we can't read T1 from its log.
   - Attestation-sidecar image rebuilt with millisecond log timestamps
@@ -63,13 +69,14 @@ Usage:
   python3 run_experiments_and_collect_tamper_detection.py --ssp 1000,5000,10000,20000 --trials 15
   python3 run_experiments_and_collect_tamper_detection.py --ssp 20000 --trials 10 --target sidecar
   python3 run_experiments_and_collect_tamper_detection.py --ssp 20000 --trials 10 --target both
-  python3 run_experiments_and_collect_tamper_detection.py --ssp 5000 --trials 30 --contract rr
+  python3 run_experiments_and_collect_tamper_detection.py --ssp 5000 --trials 30   # stack on RR
 
 Output:
   experiments/data/tamper-detection/results/<target>/SSP{N}ms-batch{B}.csv
   Columns: trial, t0_iso, t1_iso, latency_s, detected, ssp_ms, n_robots, target,
            robot, contract, verifier, verifier_addr, tx_path
-  where tx_path ∈ {2tx-secaas, 3tx-peer, unknown} is derived from the on-chain
+  where tx_path ∈ {2tx-secaas, 3tx-peer (LV, RR), 2tx-peer (V2), jury, secaas (V3),
+  unknown} is derived from the on-chain
   verifier recorded in the prover's "Verified by:" log line — making each run
   self-diagnosing for the verifier-identity effect described above.
 """
@@ -119,9 +126,15 @@ PROVER_FAILURE_ID_RE = re.compile(r"\[Prover-([^\]]+)\].*FAILURE")
 # the tamper is first sampled one full period later → deterministic worst case.
 PROVER_MEASURE_RE = re.compile(r"\[Prover\].*(?:Final digest|Rolling-hash digest)")
 
-# CONTRACT is auto-detected in main() (or forced via --contract); module-level
-# so warmup_fleet / run_trial can branch without threading it through everywhere.
+# CONTRACT is read from .env in main(); module-level so warmup_fleet / run_trial
+# can branch without threading it through everywhere.
 CONTRACT = "lv"
+CONTRACTS = {"AttestationManagerLV": "lv", "AttestationManagerRR": "rr",
+             "AttestationManagerV2": "v2", "AttestationManagerV3": "v3"}
+
+# V2 and V3: only their admins may reset them (the keys start.sh anchors the references with).
+ADMIN_KEYS = [REPO_ROOT / "blockchain/quorum-test-network/config/nodes" / v / "accountPrivateKey"
+              for v in ("validator2", "validator3")]
 
 # Map lowercase eth address → label ("secaas", "robot1", …), loaded from config/
 # at startup. Used to classify the on-chain verifier of each detected FAILURE.
@@ -185,20 +198,25 @@ def container_running(name: str) -> bool:
 # ── Contract detection & verifier-identity classification ──────────────────────
 
 def detect_contract_variant() -> str:
-    """Infer 'rr' or 'lv' from the deployed ABI in config/robot1.json.
+    """'lv', 'rr', 'v2' or 'v3', from the CONTRACT line start.sh writes to .env."""
+    for line in (REPO_ROOT / ".env").read_text().splitlines():
+        k, sep, v = line.strip().partition("=")
+        if sep and k.strip() == "CONTRACT":
+            if v.strip() not in CONTRACTS:
+                sys.exit(f"❌ unknown CONTRACT={v.strip()} in .env")
+            return CONTRACTS[v.strip()]
+    sys.exit("❌ CONTRACT is missing from .env: run start.sh first")
 
-    RR exposes SetSecaasOnly; LV exposes GetCurrentVerifier instead. Falls back
-    to 'lv' if the config can't be read (LV is the historical default).
-    """
-    cfg = REPO_ROOT / "config" / "robot1.json"
-    try:
-        abi = json.loads(cfg.read_text()).get("contract_abi", [])
-        names = {e.get("name") for e in abi if isinstance(e, dict)}
-    except (OSError, ValueError):
-        return "lv"
-    if "SetSecaasOnly" in names:
-        return "rr"
-    return "lv"
+
+def reset_chain() -> None:
+    """Reset the on-chain attestation chain: through the admins for V2 and V3,
+    through the SECaaS otherwise. Raises on failure."""
+    if CONTRACT in ("v2", "v3"):
+        name = next(k for k, v in CONTRACTS.items() if v == CONTRACT)
+        subprocess.run([str(REPO_ROOT / "reset_chain.sh"), name, *map(str, ADMIN_KEYS)],
+                       check=True, stdout=subprocess.DEVNULL)
+    else:
+        requests.post(f"{SECAAS_URL}/reset", timeout=10).raise_for_status()
 
 
 def load_verifier_labels() -> dict[str, str]:
@@ -229,14 +247,19 @@ def classify_verifier(addr: str | None) -> tuple[str, str]:
 
     secaas  → 2tx-secaas (atomic resolve: SendEvidence + ResolveAttestationSECaaS)
     robotN  → 3tx-peer    (SendEvidence + SendRefSignature + CloseAttestationProcess)
+    V2 has the reference on chain, so a peer closes in 2 tx (no SendRefSignature).
+    V3 names the juror whose vote closed the cycle; the tx count depends on the
+    jury size and on late votes, so the path is just "jury" or "secaas".
     """
     if not addr:
         return "", ""
     label = VERIFIER_LABELS.get(addr.lower(), "unknown")
+    if CONTRACT == "v3":
+        return label, {"secaas": "secaas"}.get(label, "jury" if label.startswith("robot") else "unknown")
     if label == "secaas":
         return label, "2tx-secaas"
     if label.startswith("robot"):
-        return label, "3tx-peer"
+        return label, "2tx-peer" if CONTRACT == "v2" else "3tx-peer"
     return label, "unknown"
 
 
@@ -314,7 +337,8 @@ def warmup_fleet(n_robots: int, ssp_ms: int) -> bool:
     trial starts from identical on-chain state. Returns True on success, False
     if any robot's warmup times out.
 
-      LV: seeds currentVerifier to a real robot (root-of-trust rotation).
+      LV, V2: seeds currentVerifier to a real robot (root-of-trust rotation).
+      V3: every robot succeeds once, so every robot is an eligible juror.
       RR: ResetChain sets secaasOnly=true, so the one-shot cycle seeds each
           robot's lastSuccess via SECaaS; afterwards we flip secaasOnly=false
           so trials use peer (round-robin) verification — making the verifier
@@ -323,9 +347,9 @@ def warmup_fleet(n_robots: int, ssp_ms: int) -> bool:
     print(f"   🔥 Fleet warmup ({CONTRACT.upper()}): resetting chain and seeding verifier pool…")
 
     try:
-        requests.post(f"{SECAAS_URL}/reset", timeout=10)
-    except requests.RequestException as e:
-        print(f"   ❌ SECaaS /reset failed: {e}", file=sys.stderr)
+        reset_chain()
+    except (requests.RequestException, subprocess.CalledProcessError) as e:
+        print(f"   ❌ chain reset failed: {e}", file=sys.stderr)
         return False
 
     # Start SECaaS event listener — required to process AttestationStarted events
@@ -379,6 +403,8 @@ def warmup_fleet(n_robots: int, ssp_ms: int) -> bool:
         if not set_secaas_only(False):
             return False
         print("   ✅ Warmup done. RR peer election enabled (verifier ≠ prover, ≠ SECaaS).\n")
+    elif CONTRACT == "v3":
+        print("   ✅ Warmup done. Every robot is an eligible juror.\n")
     else:
         print("   ✅ Warmup done. currentVerifier is a real robot.\n")
     return True
@@ -487,8 +513,10 @@ def wait_for_prover_failure(container: str, since: float, timeout: float,
 
 
 def _find_verifier_addr(lines: list[str], start_idx: int, att_id: str) -> str | None:
-    """Scan lines[start_idx:] for '[Prover-<att_id>] … Verified by: 0x…'."""
-    vre = re.compile(r"\[Prover-" + re.escape(att_id) + r"\].*Verified by:\s*(0x[0-9a-fA-F]+)")
+    """Scan lines[start_idx:] for '[Prover-<att_id>] … Verified by: 0x…'.
+    V3 logs 'Verified by: the jury, closing vote from 0x…' for a jury cycle."""
+    vre = re.compile(r"\[Prover-" + re.escape(att_id)
+                     + r"\].*Verified by:\s*(?:the jury, closing vote from\s*)?(0x[0-9a-fA-F]+)")
     for l in lines[start_idx:]:
         mm = vre.search(l)
         if mm:
@@ -697,22 +725,13 @@ def main():
                         "each pass a baseline attestation cycle (so they are "
                         "registered in the on-chain verifier pool) before trials "
                         "begin. Default: 4")
-    p.add_argument("--contract", choices=["rr", "lv", "auto"], default="auto",
-                   help="Contract variant. 'auto' (default) detects it from "
-                        "config/robot1.json's ABI. RR gives deterministic peer "
-                        "verification; LV uses the root-of-trust rotation.")
     args = p.parse_args()
 
     # Resolve the contract variant and load address→label map for verifier
     # classification. These populate the module globals used by warmup_fleet /
     # run_trial so the rest of the code stays contract-agnostic.
     global CONTRACT, VERIFIER_LABELS
-    CONTRACT = detect_contract_variant() if args.contract == "auto" else args.contract
-    detected = detect_contract_variant()
-    if args.contract not in ("auto", detected):
-        print(f"⚠️  --contract {args.contract} overrides detected '{detected}' "
-              f"(from ABI). Ensure the stack was started with --contract {args.contract}.",
-              file=sys.stderr)
+    CONTRACT = detect_contract_variant()
     VERIFIER_LABELS = load_verifier_labels()
     if not VERIFIER_LABELS:
         print("⚠️  no config/*.json addresses loaded — verifier/tx_path columns "
@@ -743,6 +762,10 @@ def main():
     print(f"📋 fleet={args.robots} robot(s)  targets={targets}  ssps={args.ssp}ms  trials={args.trials} each")
     if CONTRACT == "rr":
         print("📋 RR: trials use round-robin peer verification (deterministic 3-tx path).")
+    elif CONTRACT == "v3":
+        print("📋 V3: the jury or the SECaaS closes the cycle — tx_path column records which.")
+    elif CONTRACT == "v2":
+        print("📋 V2: verifier may be SECaaS or a peer, both 2-tx — tx_path column records which.")
     else:
         print("📋 LV: verifier may be SECaaS (2-tx) or a peer (3-tx) — tx_path column records which.")
     print(f"📁 results → {BASE_RESULTS}/<target>/SSPNms-batchN.csv")
@@ -774,6 +797,8 @@ def main():
             # LV must reset before EVERY trial: currentVerifier evolves during
             # recovery and determines the 2-tx vs 3-tx path, so identical
             # on-chain state per trial is required to control that variance.
+            # V2 rotates the same way. V3 too: the detected failure costs
+            # robot1 its eligibility, and absent or dissenting jurors lose theirs.
             if CONTRACT == "rr":
                 run_warmup(args.robots, ssp_ms)
 
