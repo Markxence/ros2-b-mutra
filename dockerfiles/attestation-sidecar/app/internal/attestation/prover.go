@@ -82,6 +82,7 @@ func ProcessProverAttestation(
 	logPrefix := fmt.Sprintf("[Prover-%s]", utils.ShortAttID(attestationID, 4))
 
 	// 2. Send Evidence
+	waitSubmitSlot()
 	timestamps["evidence_sent"] = utils.NowMs()
 	timestamps["p_send_evidence_start"] = utils.PerfNs()
 
@@ -399,6 +400,8 @@ func RunProverLogicContinuousMode(
 
 		batchStartTs := utils.NowMs()
 		batchStartP := utils.PerfNs()
+		attestationID := utils.GenerateAttestationID()
+		logPrefix := fmt.Sprintf("[Prover-%s]", utils.ShortAttID(attestationID, 4))
 
 		// Fold K fresh measurements into a rolling-hash accumulator.
 		var H [32]byte
@@ -410,10 +413,11 @@ func RunProverLogicContinuousMode(
 				case <-stopCh:
 					logger.Info("Attestation process stopped")
 					return
-				case <-time.After(attestationInterval()):
+				case <-time.After(measurementDelay()):
 				}
 			}
 
+			logger.Info("%s Measurement %d/%d at %d ms", logPrefix, i, K, utils.NowMs())
 			combined, robotHash, sidecarHash, libsHash, err := measureCombinedOnce(config)
 			if err != nil {
 				if compute.IsComputeHashError(err) {
@@ -477,8 +481,6 @@ func RunProverLogicContinuousMode(
 			"timestamp":       float64(time.Now().Unix()),
 		})
 
-		attestationID := utils.GenerateAttestationID()
-
 		wg.Add(1)
 		go func(attID, evidence string, startTs, startP int64) {
 			defer wg.Done()
@@ -504,8 +506,11 @@ func RunProverLogicContinuousMode(
 		// SendEvidence submissions stay spaced enough to avoid prover-account
 		// nonce races. For SSP >= 500ms the cycle period is precisely the SSP,
 		// so detection latency models can use P = SSP without a +0.5s constant.
-		sleep := attestationInterval()
-		if sleep < 500*time.Millisecond {
+		// In exp mode there is no floor: the end of a batch is visible on chain,
+		// so a floor would give an attacker 500ms of safe time after it. The
+		// spacing is enforced on the submission instead (waitSubmitSlot).
+		sleep := measurementDelay()
+		if os.Getenv("ATTESTATION_INTERVAL_MODE") != "exp" && sleep < 500*time.Millisecond {
 			sleep = 500 * time.Millisecond
 		}
 		select {
@@ -535,6 +540,35 @@ func attestationInterval() time.Duration {
 		ms = 0
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// submitGate spaces the SendEvidence of this prover by 500ms: two submissions
+// closer than that can take the same nonce, because the client releases its
+// nonce lock before sending.
+// ponytail: waiting submissions queue on the mutex, so exp mode needs an SSP
+// above 500ms on average or the queue grows without bound.
+var submitGate struct {
+	sync.Mutex
+	last time.Time
+}
+
+func waitSubmitSlot() {
+	submitGate.Lock()
+	defer submitGate.Unlock()
+	if wait := 500*time.Millisecond - time.Since(submitGate.last); wait > 0 {
+		time.Sleep(wait)
+	}
+	submitGate.last = time.Now()
+}
+
+// measurementDelay is the wait before a measurement: the SSP in fixed mode,
+// a draw of mean SSP in exp mode. Like the SSP, the mode is read on every
+// call, so that POST /config can change it between two batches.
+func measurementDelay() time.Duration {
+	if os.Getenv("ATTESTATION_INTERVAL_MODE") == "exp" {
+		return nextInterval(attestationInterval())
+	}
+	return attestationInterval()
 }
 
 // proverPollInterval is the sleep between successive RPC state-check calls

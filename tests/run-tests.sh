@@ -41,7 +41,7 @@ run_suite "Go RollingHash" \
     -v "$REPO_DIR":/repo \
     -w /repo/dockerfiles/attestation-sidecar/app \
     golang:1.25-bookworm \
-    go test ./internal/compute/ -count=1
+    go test ./internal/compute/ ./internal/attestation/ -count=1
 
 # ---------------------------------------------------------------------------
 # Suite 3 — Hardhat smart-contract tests

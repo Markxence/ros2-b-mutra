@@ -58,7 +58,7 @@ remote_compose_up() {
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [--robots N] [--remote] [--auto] [--export] [--startup] [--wait-tx]
-                        [--ssp N] [--cpu-limit X] [--contract rr|lv|v2|v3]
+                        [--ssp N] [--ssp-mode fixed|exp] [--cpu-limit X] [--contract rr|lv|v2|v3]
                         [--jury N] [--quorum T]
                         [--iterq K] [--no-bootstrap]
                         [--attest-gzserver]
@@ -76,6 +76,8 @@ Options:
   --startup      Set ONE_SHOT=TRUE
   --ssp N        Attestation interval in milliseconds — sets ATTESTATION_INTERVAL_MS=N (default: 10000).
                  Use 0 for back-to-back measurements with no sleep (bounded only by CPU_LIMIT).
+  --ssp-mode fixed|exp  fixed: wait exactly the SSP before each measurement; exp: draw the wait
+                 from an exponential law of mean SSP (default: fixed). Sets ATTESTATION_INTERVAL_MODE.
   --cpu-limit X  Sidecar CPU limit fraction — sets CPU_LIMIT=X in .env and compose files (default: 0.4)
   --contract rr|lv|v2|v3  Smart contract variant (default: lv; rr = round-robin verifier election;
                  v2 = lv with the references anchored on chain by admin keys;
@@ -134,6 +136,7 @@ WAIT_TX_VAL="FALSE"
 ONE_SHOT_VAL="FALSE"
 DEPLOY_MODE="local"
 SSP_VAL="10000"
+SSP_MODE_VAL="fixed"
 CPU_LIMIT_VAL="0.4"
 NO_CPU_LIMIT_VAL="FALSE"
 CPU_LIMIT_EXPLICIT="FALSE"
@@ -198,6 +201,13 @@ while [[ $# -gt 0 ]]; do
       SSP_VAL="$2"
       if ! [[ "$SSP_VAL" =~ ^(0|[1-9][0-9]*)$ ]]; then
         echo "❌ --ssp must be a non-negative integer in milliseconds (got '$SSP_VAL')"
+        exit 1
+      fi
+      shift 2 ;;
+    --ssp-mode)
+      SSP_MODE_VAL="$2"
+      if [[ "$SSP_MODE_VAL" != "fixed" && "$SSP_MODE_VAL" != "exp" ]]; then
+        echo "❌ --ssp-mode must be fixed or exp (got '$SSP_MODE_VAL')"
         exit 1
       fi
       shift 2 ;;
@@ -408,6 +418,7 @@ upsert_env "CONTRACT"                  "$CONTRACT_VAL"
 upsert_env "COMPOSE_PROJECT_NAME"      "$PROJECT_NAME"
 upsert_env "DEPLOY_MODE"               "$DEPLOY_MODE"
 upsert_env "ATTESTATION_INTERVAL_MS"  "$SSP_VAL"
+upsert_env "ATTESTATION_INTERVAL_MODE" "$SSP_MODE_VAL"
 if [[ "$NO_CPU_LIMIT_VAL" == "TRUE" ]]; then
   upsert_env "CPU_LIMIT" "none"
 else
@@ -435,7 +446,7 @@ fi
 
 CPU_DISPLAY="$CPU_LIMIT_VAL"
 [[ "$NO_CPU_LIMIT_VAL" == "TRUE" ]] && CPU_DISPLAY="none (uncapped)"
-echo "✅ .env updated (Robots: $N_ROBOTS_VAL, Mode: $DEPLOY_MODE, Contract: $CONTRACT_VAL, Auto: $AUTO_START_VAL, Export: $EXPORT_RESULTS_VAL, Startup: $ONE_SHOT_VAL, SSP: ${SSP_VAL}ms, CPU: $CPU_DISPLAY, IterQ: $ITERQ_VAL)"
+echo "✅ .env updated (Robots: $N_ROBOTS_VAL, Mode: $DEPLOY_MODE, Contract: $CONTRACT_VAL, Auto: $AUTO_START_VAL, Export: $EXPORT_RESULTS_VAL, Startup: $ONE_SHOT_VAL, SSP: ${SSP_VAL}ms ($SSP_MODE_VAL), CPU: $CPU_DISPLAY, IterQ: $ITERQ_VAL)"
 
 # Regenerate compose files for the selected mode.
 # Blockchain host differs per mode:
