@@ -10,12 +10,13 @@ SECAAS_URL="http://localhost:8000"
 # One Compose project name for ALL stacks
 PROJECT_NAME="ros2-b-mutra"
 
-# Remote host constants
-REMOTE1_HOST="10.5.1.20"
-REMOTE1_USER="nextnet"
+# Remote hosts. The defaults are the 5TONIC bench; export the variables to
+# deploy elsewhere (same values for stop.sh).
+REMOTE1_HOST="${REMOTE1_HOST:-10.5.1.20}"
+REMOTE1_USER="${REMOTE1_USER:-nextnet}"
 REMOTE1_LIMIT=64
-REMOTE2_HOST=""          # placeholder — set when a second remote host is available
-REMOTE2_USER="nextnet"
+REMOTE2_HOST="${REMOTE2_HOST:-}"   # set when a second remote host is available
+REMOTE2_USER="${REMOTE2_USER:-nextnet}"
 REMOTE2_LIMIT=128
 REMOTE_DIR="~/ros2-b-mutra"
 
@@ -23,7 +24,7 @@ REMOTE_DIR="~/ros2-b-mutra"
 # sidecars on remote machines know where to reach the Besu validators on d-mutra.
 # The quorum compose file no longer binds to this IP directly; it uses "21001:8545"
 # (all-interfaces) so no LOCAL_IP export is needed for docker compose.
-LOCAL_IP="10.5.99.99"
+LOCAL_IP="${LOCAL_IP:-10.5.99.99}"
 
 # Ignore orphan warnings when using multiple compose files for the same project
 export COMPOSE_IGNORE_ORPHANS=1
@@ -57,7 +58,7 @@ remote_compose_up() {
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [--robots N] [--remote] [--auto] [--export] [--startup] [--wait-tx]
-                        [--ssp N] [--cpu-limit X] [--contract rr|lv]
+                        [--ssp N] [--cpu-limit X] [--contract rr|lv|v2]
                         [--iterq K] [--no-bootstrap]
                         [--attest-gzserver]
                         [--no-wait-result]
@@ -75,7 +76,8 @@ Options:
   --ssp N        Attestation interval in milliseconds — sets ATTESTATION_INTERVAL_MS=N (default: 10000).
                  Use 0 for back-to-back measurements with no sleep (bounded only by CPU_LIMIT).
   --cpu-limit X  Sidecar CPU limit fraction — sets CPU_LIMIT=X in .env and compose files (default: 0.4)
-  --contract rr|lv  Smart contract variant (default: lv; rr = round-robin verifier election)
+  --contract rr|lv|v2  Smart contract variant (default: lv; rr = round-robin verifier election;
+                 v2 = lv with the references anchored on chain by admin keys)
   --iterq K      IterQ rolling-hash threshold: number of fresh measurements folded into
                  one on-chain attestation. K=1 = single-shot. Range: 1..10000 (default: 1)
   --no-cpu-limit Remove the CPU cgroup cap from sidecar containers entirely (uncapped).
@@ -203,8 +205,8 @@ while [[ $# -gt 0 ]]; do
     --no-cpu-limit) NO_CPU_LIMIT_VAL="TRUE"; shift ;;
     --contract)
       VARIANT_VAL="$2"
-      if [[ "$VARIANT_VAL" != "rr" && "$VARIANT_VAL" != "lv" ]]; then
-        echo "❌ --contract must be 'rr' or 'lv' (got '$VARIANT_VAL')"
+      if [[ "$VARIANT_VAL" != "rr" && "$VARIANT_VAL" != "lv" && "$VARIANT_VAL" != "v2" ]]; then
+        echo "❌ --contract must be 'rr', 'lv' or 'v2' (got '$VARIANT_VAL')"
         exit 1
       fi
       shift 2 ;;
@@ -313,8 +315,34 @@ fi
 # Map user-facing variant to internal contract name
 if [[ "$VARIANT_VAL" == "lv" ]]; then
   CONTRACT_VAL="AttestationManagerLV"
+elif [[ "$VARIANT_VAL" == "v2" ]]; then
+  CONTRACT_VAL="AttestationManagerV2"
 else
   CONTRACT_VAL="AttestationManagerRR"
+fi
+
+# V2 anchors the references on chain. They are written by admin keys that are
+# not the SECaaS key (validator1): here the accounts of validators 2 to 4,
+# two approvals out of three.
+ADMIN_NODES_DIR="$SCRIPT_DIR/blockchain/quorum-test-network/config/nodes"
+if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
+  ADMINS=""
+  for v in 2 3 4; do
+    admin_addr="$(jq -er '"0x" + (.address | ltrimstr("0x"))' "$ADMIN_NODES_DIR/validator$v/accountKeystore")" \
+      || { echo "❌ cannot read the admin address of validator$v"; exit 1; }
+    ADMINS="${ADMINS:+$ADMINS,}$admin_addr"
+  done
+  export ADMINS
+  export ADMIN_THRESHOLD=2
+fi
+
+# V2 stores SHA256(h_ref || salt_agent) on chain, and the sidecars send the
+# salted measurement, so the ledger does not reveal which binary a robot runs.
+SALT_MEASUREMENT_VAL="FALSE"
+BOOTSTRAP_FLAGS=()
+if [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]]; then
+  SALT_MEASUREMENT_VAL="TRUE"
+  BOOTSTRAP_FLAGS=(--salted)
 fi
 
 
@@ -344,11 +372,11 @@ fi
 # containers with AUTO_START=FALSE so the prover doesn't fire SendEvidence
 # against the placeholder refs in the DB while we're capturing real ones.
 # We restore .env to the user's intent and trigger /start via HTTP after
-# the bootstrap step finishes. In --no-bootstrap mode (or remote mode),
-# AUTO_START is passed through as-is.
+# the bootstrap step finishes. In --no-bootstrap mode, AUTO_START is passed
+# through as-is.
 WANT_AUTO_START="$AUTO_START_VAL"
 EFFECTIVE_AUTO_START="$AUTO_START_VAL"
-if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" && "$AUTO_START_VAL" == "TRUE" ]]; then
+if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$AUTO_START_VAL" == "TRUE" ]]; then
   EFFECTIVE_AUTO_START="FALSE"   # hold the workers until bootstrap is done
 fi
 
@@ -367,6 +395,7 @@ else
   upsert_env "CPU_LIMIT" "$CPU_LIMIT_VAL"
 fi
 upsert_env "ITERQ_THRESHOLD"           "$ITERQ_VAL"
+upsert_env "SALT_MEASUREMENT"          "$SALT_MEASUREMENT_VAL"
 upsert_env "GAZEBO_WORLD"              "$WORLD_VAL"
 upsert_env "ENABLE_NAV2"              "$NAV2_VAL"
 upsert_env "ENABLE_FORMATION"          "$FORMATION_VAL"
@@ -630,6 +659,26 @@ else
 fi
 # ══════════════════════════════════════════════════════════════════════════════
 
+# V2 only: two admins approve each robot's reference on chain.
+anchor_references() {
+  [[ "$CONTRACT_VAL" == "AttestationManagerV2" ]] || return 0
+  echo "⚓ Anchoring references on chain..."
+  "$SCRIPT_DIR/set_references.sh" "$N_ROBOTS_VAL" \
+    "$ADMIN_NODES_DIR/validator2/accountPrivateKey" \
+    "$ADMIN_NODES_DIR/validator3/accountPrivateKey"
+}
+
+# Host that publishes the HTTP port of robot <i>'s sidecar (8000 + i).
+sidecar_host() {
+  if [[ "$DEPLOY_MODE" == "local" ]]; then
+    echo "localhost"
+  elif (( $1 <= REMOTE1_LIMIT )); then
+    echo "$REMOTE1_HOST"
+  else
+    echo "$REMOTE2_HOST"
+  fi
+}
+
 # ── Reference measurements bootstrap ──────────────────────────────────────────
 # Capture the *real* triplet (robot_hash, sidecar_hash, combined_hash) from
 # robot1's sidecar, patch every ref-measurements/robot{i}.json with it, and
@@ -640,9 +689,10 @@ fi
 # After this, if the user passed --auto, we trigger /start on SECaaS and on
 # every sidecar to launch the workers that we deliberately held back during
 # container boot (see the EFFECTIVE_AUTO_START stashing above).
-if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
+if [[ "$BOOTSTRAP_REFS" == "TRUE" ]]; then
+  SOURCE_HOST="$(sidecar_host 1)"
   echo
-  echo "🔧 Bootstrapping real reference measurements..."
+  echo "🔧 Bootstrapping real reference measurements (robot1 on $SOURCE_HOST)..."
 
   # Wait for robot1's sidecar to be reachable AND for its target binary
   # (robot_state_publisher / dummy_publisher) to be alive in the robot
@@ -651,7 +701,7 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
   max_attempts=70   # = up to 2 minutes
   attempt=1
   while (( attempt <= max_attempts )); do
-    if curl -s "http://localhost:8001/digest" 2>/dev/null | grep -q '"combined_hash"'; then
+    if curl -s "http://$SOURCE_HOST:8001/digest" 2>/dev/null | grep -q '"combined_hash"'; then
       echo "✅ robot1 /digest is ready."
       break
     fi
@@ -662,7 +712,9 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
   if (( attempt > max_attempts )); then
     echo "⚠️  /digest didn't come up in time. Skipping bootstrap — attestations will FAIL on placeholder refs until you run bootstrap_ref_measurements.py manually."
   else
-    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" --sync-secaas \
+    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" --robots "$N_ROBOTS_VAL" \
+        --sidecar-host "$SOURCE_HOST" --sync-secaas "${BOOTSTRAP_FLAGS[@]}" \
+      && anchor_references \
       && echo "🧹 Resetting on-chain attestation chain..." \
       && curl -s -X POST "$SECAAS_URL/reset" | jq . \
       || echo "⚠️  Bootstrap failed — attestations may close as FAILURE."
@@ -677,35 +729,8 @@ if [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "local" ]]; then
     echo "▶ Auto-starting attestation workers (SECaaS + sidecars)..."
     curl -s -X POST "$SECAAS_URL/start" | jq .
     for i in $(seq 1 "$N_ROBOTS_VAL"); do
-      curl -s -X POST "http://localhost:$((8000 + i))/start" | jq -c .
+      curl -s -X POST "http://$(sidecar_host "$i"):$((8000 + i))/start" | jq -c .
     done
-  fi
-elif [[ "$BOOTSTRAP_REFS" == "TRUE" && "$DEPLOY_MODE" == "remote" ]]; then
-  echo
-  echo "🔧 Bootstrapping real reference measurements (remote)..."
-
-  max_attempts=60   # = up to 2 minutes
-  attempt=1
-  while (( attempt <= max_attempts )); do
-    if curl -s "http://$REMOTE1_HOST:8001/digest" 2>/dev/null | grep -q '"combined_hash"'; then
-      echo "✅ robot1 /digest is ready."
-      break
-    fi
-    echo "   (Attempt $attempt/$max_attempts) Waiting for /digest on $REMOTE1_HOST:8001..."
-    sleep 2
-    (( attempt++ ))
-  done
-  if (( attempt > max_attempts )); then
-    echo "⚠️  /digest didn't come up in time. Run bootstrap manually:"
-    echo "      python3 bootstrap_ref_measurements.py --robots $N_ROBOTS_VAL --sidecar-host $REMOTE1_HOST --sync-secaas"
-  else
-    python3 "$SCRIPT_DIR/bootstrap_ref_measurements.py" \
-      --robots "$N_ROBOTS_VAL" \
-      --sidecar-host "$REMOTE1_HOST" \
-      --sync-secaas \
-      && echo "🧹 Resetting on-chain attestation chain..." \
-      && curl -s -X POST "$SECAAS_URL/reset" | jq . \
-      || echo "⚠️  Bootstrap failed — attestations may close as FAILURE."
   fi
 fi
 

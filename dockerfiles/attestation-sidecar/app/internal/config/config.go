@@ -69,6 +69,7 @@ type AppConfig struct {
 	ProverThreshold      int    // legacy, unused
 	IterQThreshold       uint32 // K = number of fresh measurements folded into one on-chain attestation
 	SelfIntegrityEnabled bool
+	SaltMeasurement      bool // send SHA256(m || salt) instead of m (contract V2)
 	
 	// ADDED: Storage for the auto-discovered integrity info
 	SelfIntegrity SelfIntegrityConfig 
@@ -127,6 +128,7 @@ func Load() (*AppConfig, error) {
 		ProverThreshold:      utils.GetEnvInt("PROVER_THRESHOLD", 300),
 		IterQThreshold:       uint32(utils.GetEnvInt("ITERQ_THRESHOLD", 1)),
 		SelfIntegrityEnabled: utils.GetEnvBool("SELF_INTEGRITY_ENABLED", false),
+		SaltMeasurement:      utils.GetEnvBool("SALT_MEASUREMENT", false),
 
 		// Initialize Empty SelfIntegrity (Will be populated in main.go)
 		SelfIntegrity: SelfIntegrityConfig{

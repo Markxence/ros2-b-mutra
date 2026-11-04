@@ -47,14 +47,14 @@ run_suite "Go RollingHash" \
 # Suite 3 — Hardhat smart-contract tests
 # ---------------------------------------------------------------------------
 # Requires the project's hardhat:latest image (built by `cd dockerfiles && make hardhat`).
-run_suite "Hardhat AttestationManagerLV" \
+run_suite "Hardhat contracts (LV, V2)" \
   docker run --rm \
     -v "$REPO_DIR/smart-contracts/contracts":/smart-contracts/contracts:ro \
     -v "$REPO_DIR/smart-contracts/test":/smart-contracts/test:ro \
     -v "$REPO_DIR/smart-contracts/scripts":/smart-contracts/scripts:ro \
     -v "$REPO_DIR/smart-contracts/hardhat.config.js":/smart-contracts/hardhat.config.js:ro \
     hardhat:latest \
-    bash -c "cd /smart-contracts && npx hardhat test test/AttestationManagerLV.test.js"
+    bash -c "cd /smart-contracts && npx hardhat test"
 
 if (( fail )); then
   red "Some suites failed."

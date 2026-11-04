@@ -75,12 +75,23 @@ func startAttestation(state *AppState) {
 		}
 	}
 
+	var salt *[32]byte
+	if state.Config.SaltMeasurement {
+		s, err := compute.MeasurementSalt(state.Config.Agent.PrivateKey)
+		if err != nil {
+			logger.Error("Failed to derive the measurement salt: %v", err)
+			return
+		}
+		salt = &s
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	state.cancelFunc = cancel
 	state.measuring = true
 
 	// 1. Map Config -> Prover Config
 	proverCfg := attestation.ProverConfig{
+		Salt:                   salt,
 		CmdName:                state.Config.Agent.CmdName,
 		TextSectionSize:        state.Config.Agent.TextSectionSize,
 		Offset:                 state.Config.Agent.Offset,

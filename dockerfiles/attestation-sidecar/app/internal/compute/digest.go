@@ -1,6 +1,7 @@
 package compute
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +10,27 @@ import (
 
 	"app/internal/utils"
 )
+
+// MeasurementSalt derives the per-agent salt from the agent's private key:
+// HMAC-SHA256(key, "d-mutra/measurement-salt"). Only the agent and whoever
+// enrolled it can compute it.
+func MeasurementSalt(privateKeyHex string) ([32]byte, error) {
+	var salt [32]byte
+	key, err := hex.DecodeString(strings.TrimPrefix(privateKeyHex, "0x"))
+	if err != nil || len(key) != 32 {
+		return salt, fmt.Errorf("invalid private key for salt derivation (len=%d): %v", len(key), err)
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("d-mutra/measurement-salt"))
+	copy(salt[:], mac.Sum(nil))
+	return salt, nil
+}
+
+// SaltMeasurement returns SHA256(m || salt). It is what goes on chain in
+// place of m, so that the ledger does not reveal which binary an agent runs.
+func SaltMeasurement(m, salt [32]byte) [32]byte {
+	return RollingHashStep(m, salt)
+}
 
 // RollingHash returns the K-iterated chained SHA-256 over a static seed:
 //

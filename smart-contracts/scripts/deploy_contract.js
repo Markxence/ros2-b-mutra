@@ -16,6 +16,14 @@ async function main() {
     const vrp = parseInt(process.env.VRP || "1");
     console.log(`VRP        : ${vrp}`);
     contract = await factory.deploy(vrp, { gasPrice: 0 });
+  } else if (CONTRACT_NAME === "AttestationManagerV2") {
+    // Admin keys that may write the on-chain references. Never the deployer (SECaaS).
+    const { ADMINS, ADMIN_THRESHOLD } = process.env;
+    if (!ADMINS || !ADMIN_THRESHOLD) {
+      throw new Error("AttestationManagerV2 requires ADMINS (comma-separated addresses) and ADMIN_THRESHOLD");
+    }
+    console.log(`Admins     : ${ADMINS} (threshold ${ADMIN_THRESHOLD})`);
+    contract = await factory.deploy(ADMINS.split(","), parseInt(ADMIN_THRESHOLD), { gasPrice: 0 });
   } else {
     contract = await factory.deploy({ gasPrice: 0 });
   }

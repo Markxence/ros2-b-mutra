@@ -40,6 +40,7 @@ REMOTE2_LIMIT = 128  # remote mode: robots 65..128 on remote2
 CONTRACT_TO_IMAGE = {
     "AttestationManagerRR": "attestation-sidecar:latest",
     "AttestationManagerLV": "attestation-sidecar:latest",
+    "AttestationManagerV2": "attestation-sidecar:latest",
 }
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -316,6 +317,7 @@ def generate_attestation_yml(n: int, start: int = 1, config_dir: str = "./config
             f"      - MEMORY_STORAGE_FILE=/measurements/robot{i}_measurements.json",
             f"      - ATTESTATION_INTERVAL_MS=${{ATTESTATION_INTERVAL_MS}}",
             f"      - ITERQ_THRESHOLD=${{ITERQ_THRESHOLD}}",
+            f"      - SALT_MEASUREMENT=${{SALT_MEASUREMENT}}",
             f"      - EVENT_CONFIRMATIONS=${{EVENT_CONFIRMATIONS}}",
             f"      - EVENT_POLL_INTERVAL=${{EVENT_POLL_INTERVAL}}",
             f"      - EVENT_BATCH_SIZE=${{EVENT_BATCH_SIZE}}",
@@ -386,6 +388,7 @@ def generate_attestation_remote_yml(n_start: int, n_end: int, config_dir: str = 
             f"      - MEMORY_STORAGE_FILE=/measurements/robot{i}_measurements.json",
             f"      - ATTESTATION_INTERVAL_MS=${{ATTESTATION_INTERVAL_MS}}",
             f"      - ITERQ_THRESHOLD=${{ITERQ_THRESHOLD}}",
+            f"      - SALT_MEASUREMENT=${{SALT_MEASUREMENT}}",
             f"      - EVENT_CONFIRMATIONS=${{EVENT_CONFIRMATIONS}}",
             f"      - EVENT_POLL_INTERVAL=${{EVENT_POLL_INTERVAL}}",
             f"      - EVENT_BATCH_SIZE=${{EVENT_BATCH_SIZE}}",
