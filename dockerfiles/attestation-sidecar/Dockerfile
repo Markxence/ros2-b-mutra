@@ -12,13 +12,8 @@ COPY app/ ./app/
 # We move into the folder where main.go resides
 WORKDIR /src/app
 
-# 1. Init module 'app' if go.mod doesn't exist
-# 2. Pin go-ethereum to a compatible version
-# 3. Tidy dependencies
-# 4. Build binaries
-RUN [ ! -f go.mod ] && go mod init app || true \
-    && go get github.com/ethereum/go-ethereum@v1.14.12 \
-    && go mod tidy \
+# Dependencies are pinned in app/go.mod and app/go.sum.
+RUN go mod download \
     && CGO_ENABLED=0 go build -o /bin/attestation-sidecar . \
     && CGO_ENABLED=0 go build -o /bin/txbench ./cmd/txbench \
     && CGO_ENABLED=0 go build -o /bin/txbench-parallel ./cmd/txbench-parallel

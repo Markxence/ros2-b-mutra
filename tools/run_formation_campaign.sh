@@ -33,11 +33,11 @@
 #   metrics-<tag>.json     headline summary (progress_pct, cumulative_damage, ...)
 #
 # Usage (run in small pieces first to inspect):
-#   ./tools/run_formation_campaign.sh --scenarios baseline    --reps 1 --password "nextnet;"
-#   ./tools/run_formation_campaign.sh --scenarios unmitigated --reps 1 --password "nextnet;"
-#   ./tools/run_formation_campaign.sh --scenarios mitigated --ssp-list 10000 --reps 1 --password "nextnet;"
+#   ./tools/run_formation_campaign.sh --scenarios baseline    --reps 1
+#   ./tools/run_formation_campaign.sh --scenarios unmitigated --reps 1
+#   ./tools/run_formation_campaign.sh --scenarios mitigated --ssp-list 10000 --reps 1
 #   # full sweep, 5 reps:
-#   ./tools/run_formation_campaign.sh --reps 5 --ssp-list "10000 20000 30000 60000" --password "nextnet;"
+#   ./tools/run_formation_campaign.sh --reps 5 --ssp-list "10000 20000 30000 60000"
 #
 # There is always exactly ONE victim (robot3) and the swarm size is fixed at 4.
 
@@ -74,7 +74,6 @@ ATTACK_DELAY_S="${ATTACK_DELAY_S:-10}"   # travel time before the attack (swarm 
 K_FORM="${K_FORM:-3.0}"                  # 3.0 = stiff (shape-rigid); try 1.0/0.5 to expose FE damage
 K_ATT="${K_ATT:-0.8}"
 
-PASSWORD="${PASSWORD:-nextnet;}"
 COOLDOWN_S="${COOLDOWN_S:-60}"
 GOAL_TIMEOUT_S="${GOAL_TIMEOUT_S:-360}"      # max wait for "Goal published" after start.sh
 DONE_TIMEOUT_S="${DONE_TIMEOUT_S:-700}"      # max wait for events-<tag>.json after goal
@@ -94,7 +93,6 @@ while [[ $# -gt 0 ]]; do
     --attack-delay)    ATTACK_DELAY_S="$2"; shift 2 ;;
     --k-form)          K_FORM="$2"; shift 2 ;;
     --k-att)           K_ATT="$2"; shift 2 ;;
-    --password)        PASSWORD="$2"; shift 2 ;;
     --gpu)             GPU="$2"; shift 2 ;;
     --data-subdir)     DATA_SUBDIR="$2"; shift 2 ;;
     --dry-run)         DRY_RUN="true"; shift ;;
@@ -163,7 +161,7 @@ inject_attack() {
   local t_wall; t_wall="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
   # Ensure $FDIR is host-user-owned before writing the inject record; containers
   # running as root may have taken ownership of the directory during the run.
-  echo "$PASSWORD" | sudo -S chown "$(id -u):$(id -g)" "$FDIR" 2>/dev/null || true
+  docker run --rm -v "$FDIR":/d alpine chown "$(id -u):$(id -g)" /d 2>/dev/null || true
   ( printf '{"tag":"%s","victim":"%s","attack_delay_s":%s,"t_inject_wall":"%s","anchored":%s}\n' \
       "$tag" "$VICTIM" "$ATTACK_DELAY_S" "$t_wall" "$anchored" \
       > "$FDIR/inject-${tag}.json" \
@@ -223,7 +221,7 @@ one_run() {
 
   if [[ "$DRY_RUN" == "true" ]]; then
     log "   (dry-run) ./start.sh --robots 4 --formation --auto \
---mitigation $mit --run-tag $tag --ssp $ssp $([[ "$GPU" == "on" ]] && echo --gpu) --password '***'"
+--mitigation $mit --run-tag $tag --ssp $ssp $([[ "$GPU" == "on" ]] && echo --gpu)"
     return 0
   fi
 
@@ -233,12 +231,12 @@ one_run() {
   # from .env, which was updated by upsert above).
   FORMATION_DATA_SUBDIR="$DATA_SUBDIR" ./start.sh --robots 4 --formation --auto \
     --mitigation "$mit" --run-tag "$tag" --ssp "$ssp" \
-    "${gpu_flag[@]}" --password "$PASSWORD"
+    "${gpu_flag[@]}"
 
   log "⏳ waiting for goal published (mission start)…"
   if ! wait_goal_published; then
     log "❌ goal never published for $tag — tearing down and skipping"
-    ./stop.sh --password "$PASSWORD" >/dev/null 2>&1 || true
+    ./stop.sh >/dev/null 2>&1 || true
     return 1
   fi
   log "🟢 mission started"
@@ -247,7 +245,7 @@ one_run() {
   # topics aren't yet publishing. Better to abort loudly than collect an empty bag.
   if ! docker ps --format '{{.Names}}' | grep -qx bag-recorder; then
     log "❌ bag-recorder is NOT running — aborting run $tag (no data would be captured)"
-    ./stop.sh --password "$PASSWORD" >/dev/null 2>&1 || true
+    ./stop.sh >/dev/null 2>&1 || true
     return 1
   fi
   log "📼 bag-recorder confirmed running"
@@ -276,7 +274,7 @@ one_run() {
   fi
 
   log "🧹 teardown (flushes the bag)"
-  ./stop.sh --password "$PASSWORD" >/dev/null 2>&1 || ./stop.sh --password "$PASSWORD"
+  ./stop.sh >/dev/null 2>&1 || ./stop.sh
 
   extract_metrics "$tag"
   log "🧊 cooldown ${COOLDOWN_S}s"
@@ -288,7 +286,7 @@ mkdir -p "$FDIR"
 # The orchestrator/recorder containers write events/bags as root, leaving the
 # data dir root-owned; take ownership so the host-side script can also write its
 # inject-<tag>.json records here (root containers can still write inside).
-echo "$PASSWORD" | sudo -S chown -R "$(id -u):$(id -g)" "$FDIR" 2>/dev/null || true
+docker run --rm -v "$FDIR":/d alpine chown -R "$(id -u):$(id -g)" /d 2>/dev/null || true
 log "Formation campaign: scenarios=[$SCENARIOS] reps=$REPS victim=$VICTIM"
 log "          goal_x=$GOAL_X window=${RUN_DURATION_S}s attack_delay=${ATTACK_DELAY_S}s ssp_list=[$SSP_LIST] gpu=${GPU}"
 log "          k_form=$K_FORM k_att=$K_ATT (lower k_form -> softer formation -> FE damage scales with stall)"

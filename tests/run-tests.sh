@@ -39,16 +39,9 @@ run_suite "Python rolling_hash" \
 run_suite "Go RollingHash" \
   docker run --rm \
     -v "$REPO_DIR":/repo \
-    -w /repo/dockerfiles/attestation-sidecar-optimized/app \
+    -w /repo/dockerfiles/attestation-sidecar/app \
     golang:1.25-bookworm \
-    bash -c '
-      set -e
-      [ ! -f go.mod ] && go mod init app >/dev/null
-      go get github.com/ethereum/go-ethereum@v1.14.12 >/dev/null 2>&1
-      go mod tidy >/dev/null 2>&1
-      go test ./internal/compute/ -count=1
-      rm -f go.mod go.sum
-    '
+    go test ./internal/compute/ -count=1
 
 # ---------------------------------------------------------------------------
 # Suite 3 — Hardhat smart-contract tests

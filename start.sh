@@ -10,8 +10,6 @@ SECAAS_URL="http://localhost:8000"
 # One Compose project name for ALL stacks
 PROJECT_NAME="ros2-b-mutra"
 
-PASSWORD="netcom;"
-
 # Remote host constants
 REMOTE1_HOST="10.5.1.20"
 REMOTE1_USER="nextnet"
@@ -60,7 +58,6 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [--robots N] [--remote] [--auto] [--export] [--startup] [--wait-tx]
                         [--ssp N] [--cpu-limit X] [--contract rr|lv]
-                        [--password VALUE]
                         [--iterq K] [--no-bootstrap]
                         [--attest-gzserver]
                         [--no-wait-result]
@@ -84,7 +81,6 @@ Options:
   --no-cpu-limit Remove the CPU cgroup cap from sidecar containers entirely (uncapped).
                  Mutually exclusive with --cpu-limit.
                  Saves CPU_LIMIT=none to .env; outputs files tagged cpuNC.
-    --password VALUE  Password piped into sudo for local checkpoint reset (default: netcom;)
   --no-bootstrap Skip the automatic reference-measurements bootstrap step. By default,
                  after the stack is up, start.sh captures real refs from robot1's sidecar
                  via /digest, syncs them to the SECaaS DB, and resets the on-chain chain
@@ -137,7 +133,6 @@ CPU_LIMIT_EXPLICIT="FALSE"
 VARIANT_VAL="lv"
 CONTRACT_VAL="AttestationManagerLV"
 ITERQ_VAL="1"
-PASSWORD_VAL="netcom;"
 BOOTSTRAP_REFS="TRUE"
 WAIT_RESULT_VAL="TRUE"
 ATTEST_GZSERVER_VAL="FALSE"
@@ -212,13 +207,6 @@ while [[ $# -gt 0 ]]; do
         echo "❌ --contract must be 'rr' or 'lv' (got '$VARIANT_VAL')"
         exit 1
       fi
-      shift 2 ;;
-    --password)
-      if [[ -z "${2-}" ]]; then
-        echo "❌ --password requires a value"
-        exit 1
-      fi
-      PASSWORD_VAL="$2"
       shift 2 ;;
     --iterq)
       ITERQ_VAL="$2"
@@ -329,7 +317,6 @@ else
   CONTRACT_VAL="AttestationManagerRR"
 fi
 
-PASSWORD="$PASSWORD_VAL"
 
 # Validate remote2 requirements before proceeding
 if [[ "$DEPLOY_MODE" == "remote" ]] && (( N_ROBOTS_VAL > REMOTE1_LIMIT )) && [[ -z "$REMOTE2_HOST" ]]; then
@@ -400,7 +387,7 @@ fi
 
 CPU_DISPLAY="$CPU_LIMIT_VAL"
 [[ "$NO_CPU_LIMIT_VAL" == "TRUE" ]] && CPU_DISPLAY="none (uncapped)"
-echo "✅ .env updated (Robots: $N_ROBOTS_VAL, Mode: $DEPLOY_MODE, Contract: $CONTRACT_VAL, Auto: $AUTO_START_VAL, Export: $EXPORT_RESULTS_VAL, Startup: $ONE_SHOT_VAL, SSP: ${SSP_VAL}ms, CPU: $CPU_DISPLAY, IterQ: $ITERQ_VAL, Password: set)"
+echo "✅ .env updated (Robots: $N_ROBOTS_VAL, Mode: $DEPLOY_MODE, Contract: $CONTRACT_VAL, Auto: $AUTO_START_VAL, Export: $EXPORT_RESULTS_VAL, Startup: $ONE_SHOT_VAL, SSP: ${SSP_VAL}ms, CPU: $CPU_DISPLAY, IterQ: $ITERQ_VAL)"
 
 # Regenerate compose files for the selected mode.
 # Blockchain host differs per mode:
@@ -427,7 +414,7 @@ RESET_SCRIPT="$CHECKPOINT_DIR/reset_event_watcher.sh"
 
 if [[ -d "$CHECKPOINT_DIR" && -f "$RESET_SCRIPT" ]]; then
   echo "🧹 Resetting local EventWatcher checkpoints..."
-  ( cd "$CHECKPOINT_DIR" && echo "$PASSWORD" | sudo -S bash "./$(basename "$RESET_SCRIPT")" )
+  docker run --rm -v "$CHECKPOINT_DIR":/cp alpine sh -c 'find /cp -name "*.json" -delete'
   echo
 else
   echo "⚠️  Skipping local checkpoint reset (missing $RESET_SCRIPT or $CHECKPOINT_DIR)"
