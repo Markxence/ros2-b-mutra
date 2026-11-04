@@ -485,6 +485,50 @@ func (bc *BlockchainClient) SendAttestationResult(attID string, verified bool, w
 	return txHash, nil
 }
 
+// Vote gives this agent's verdict as a juror of a V3 cycle.
+func (bc *BlockchainClient) Vote(attID string, verdict bool, wait bool, timeout int) (string, error) {
+	attIDBytes, err := TextToBytes32(attID)
+	if err != nil {
+		return "", err
+	}
+	data, err := bc.contractABI.Pack("Vote", attIDBytes, verdict)
+	if err != nil {
+		return "", err
+	}
+	txHash, err := bc.sendSignedTransaction(context.Background(), data)
+	if err != nil {
+		return "", err
+	}
+	if wait {
+		if err := bc.waitForReceipt(txHash, timeout); err != nil {
+			return txHash, err
+		}
+	}
+	return txHash, nil
+}
+
+// Expire hands a V3 jury cycle to the SECaaS once its timeout has passed.
+func (bc *BlockchainClient) Expire(attID string, wait bool, timeout int) (string, error) {
+	attIDBytes, err := TextToBytes32(attID)
+	if err != nil {
+		return "", err
+	}
+	data, err := bc.contractABI.Pack("Expire", attIDBytes)
+	if err != nil {
+		return "", err
+	}
+	txHash, err := bc.sendSignedTransaction(context.Background(), data)
+	if err != nil {
+		return "", err
+	}
+	if wait {
+		if err := bc.waitForReceipt(txHash, timeout); err != nil {
+			return txHash, err
+		}
+	}
+	return txHash, nil
+}
+
 // -------------------------------------------------------------------------
 // Contract Reads (Using rawEthCall)
 // -------------------------------------------------------------------------
@@ -630,6 +674,120 @@ func (bc *BlockchainClient) IsVerifier(attID string) (bool, error) {
 		return false, nil
 	}
 	return v, nil
+}
+
+// HasJury tells whether the deployed contract draws a jury per cycle (V3).
+func (bc *BlockchainClient) HasJury() bool {
+	_, ok := bc.contractABI.Methods["Vote"]
+	return ok
+}
+
+func (bc *BlockchainClient) Address() common.Address {
+	return bc.ethAddress
+}
+
+func (bc *BlockchainClient) BlockNumber() (uint64, error) {
+	return bc.client.BlockNumber(context.Background())
+}
+
+// TxBlockNumber returns the block a transaction was mined in.
+func (bc *BlockchainClient) TxBlockNumber(txHashStr string) (uint64, error) {
+	receipt, err := bc.client.TransactionReceipt(context.Background(), common.HexToHash(txHashStr))
+	if err != nil {
+		return 0, err
+	}
+	return receipt.BlockNumber.Uint64(), nil
+}
+
+// JuryTimeoutBlocks returns the number of blocks after its evidence block
+// from which a V3 jury cycle can be expired.
+func (bc *BlockchainClient) JuryTimeoutBlocks() (uint64, error) {
+	data, err := bc.contractABI.Pack("juryTimeoutBlocks")
+	if err != nil {
+		return 0, err
+	}
+	res, err := bc.rawEthCall(nil, data)
+	if err != nil {
+		return 0, err
+	}
+	values, err := bc.contractABI.Unpack("juryTimeoutBlocks", res)
+	if err != nil {
+		return 0, err
+	}
+	v, ok := values[0].(*big.Int)
+	if !ok {
+		return 0, fmt.Errorf("juryTimeoutBlocks: unexpected type %T", values[0])
+	}
+	return v.Uint64(), nil
+}
+
+// PreviewJury returns the jury of a V3 cycle. The contract reverts until a
+// block has been sealed after the evidence block.
+func (bc *BlockchainClient) PreviewJury(attID string) ([]common.Address, error) {
+	attIDBytes, err := TextToBytes32(attID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := bc.contractABI.Pack("PreviewJury", attIDBytes)
+	if err != nil {
+		return nil, err
+	}
+	res, err := bc.rawEthCall(nil, data)
+	if err != nil {
+		return nil, err
+	}
+	return unpackJury(bc.contractABI, res)
+}
+
+// JuryVotes returns the frozen jury of a V3 cycle and what each juror
+// voted, e.g. "robot2=valid, robot3=invalid, robot4=no vote". Both are
+// empty before the first vote.
+func (bc *BlockchainClient) JuryVotes(attID string) ([]common.Address, string, error) {
+	attIDBytes, err := TextToBytes32(attID)
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := bc.contractABI.Pack("GetJury", attIDBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	res, err := bc.rawEthCall(nil, data)
+	if err != nil {
+		return nil, "", err
+	}
+	values, err := bc.contractABI.Unpack("GetJury", res)
+	if err != nil {
+		return nil, "", err
+	}
+	jurors, ok1 := values[0].([]common.Address)
+	votes, ok2 := values[1].([]uint8)
+	if len(values) != 2 || !ok1 || !ok2 || len(jurors) != len(votes) {
+		return nil, "", fmt.Errorf("GetJury: unexpected return %v", values)
+	}
+	parts := make([]string, len(jurors))
+	for i, j := range jurors {
+		name, _, _, err := bc.GetAgentInfo(j)
+		if err != nil {
+			return nil, "", err
+		}
+		parts[i] = name + "=" + [...]string{"no vote", "invalid", "valid"}[votes[i]]
+	}
+	return jurors, strings.Join(parts, ", "), nil
+}
+
+func unpackJury(contractABI abi.ABI, res []byte) ([]common.Address, error) {
+	values, err := contractABI.Unpack("PreviewJury", res)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != 1 {
+		return nil, fmt.Errorf("PreviewJury: expected 1 return, got %d", len(values))
+	}
+	jury, ok := values[0].([]common.Address)
+	if !ok {
+		return nil, fmt.Errorf("PreviewJury: unexpected type %T", values[0])
+	}
+	return jury, nil
 }
 
 func (bc *BlockchainClient) GetAttestationState(attID string) (AttestationState, error) {
@@ -855,6 +1013,13 @@ func (bc *BlockchainClient) safeDisplay(n int) {
 		chain,
 		bc.GetAttestationInfo,
 		bc.GetAgentInfo,
+		func(attID string) (string, error) {
+			if !bc.HasJury() {
+				return "", nil
+			}
+			_, votes, err := bc.JuryVotes(attID)
+			return votes, err
+		},
 		"0xed9d02e382b34818e88b88a309c7fe71e65f419d",
 		n,
 	)

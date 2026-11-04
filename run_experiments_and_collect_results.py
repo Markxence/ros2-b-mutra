@@ -241,13 +241,27 @@ def stop_all_agents(sidecars):
         for f in as_completed(futures):
             print(f"      {f.result()}")
 
+# V2 and V3: only their admins may reset them (the keys start.sh anchors the references with).
+_ADMIN_KEYS = [os.path.join(_SCRIPT_DIR, "blockchain/quorum-test-network/config/nodes", v, "accountPrivateKey")
+               for v in ("validator2", "validator3")]
+
+def _env_value(key):
+    """Value of <key> in .env, written by start.sh."""
+    with open(os.path.join(_SCRIPT_DIR, ".env")) as f:
+        for line in f:
+            k, sep, v = line.strip().partition("=")
+            if sep and k.strip() == key:
+                return v.strip()
+    raise SystemExit(f"{key} is missing from .env: run start.sh first")
+
 def reset_chain():
-    """Resets the blockchain state via SECaaS API."""
-    try:
-        requests.post(f"{SECAAS_URL}/reset", timeout=10)
-        print("   [Chain] State reset successfully.")
-    except Exception as e:
-        print(f"   [Chain] ⚠️ Warning: Reset failed: {e}")
+    """Resets the on-chain attestation chain: through the admins for V2 and V3, through the SECaaS otherwise."""
+    contract = _env_value("CONTRACT")
+    if contract in ("AttestationManagerV2", "AttestationManagerV3"):
+        subprocess.run([os.path.join(_SCRIPT_DIR, "reset_chain.sh"), contract, *_ADMIN_KEYS], check=True)
+    else:
+        requests.post(f"{SECAAS_URL}/reset", timeout=10).raise_for_status()
+    print("   [Chain] State reset.")
 
 
 def _build_run_tag(ssp_ms, iterq, cpu_limit) -> str:

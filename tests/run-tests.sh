@@ -47,7 +47,7 @@ run_suite "Go RollingHash" \
 # Suite 3 — Hardhat smart-contract tests
 # ---------------------------------------------------------------------------
 # Requires the project's hardhat:latest image (built by `cd dockerfiles && make hardhat`).
-run_suite "Hardhat contracts (LV, V2)" \
+run_suite "Hardhat contracts (LV, V2, V3)" \
   docker run --rm \
     -v "$REPO_DIR/smart-contracts/contracts":/smart-contracts/contracts:ro \
     -v "$REPO_DIR/smart-contracts/test":/smart-contracts/test:ro \

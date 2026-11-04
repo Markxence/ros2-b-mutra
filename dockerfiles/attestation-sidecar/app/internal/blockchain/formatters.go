@@ -13,12 +13,14 @@ import (
 // Function types to match the Client methods
 type GetAttestationInfoFunc func(string) (common.Address, common.Address, uint8, *big.Int, error)
 type GetAgentInfoFunc func(common.Address) (string, bool, *big.Int, error)
+type JuryVotesFunc func(string) (string, error)
 
 // BuildAttestationChainTable generates a formatted ASCII table string for the chain.
 func BuildAttestationChainTable(
 	attestationChain [][32]byte,
 	getAttestationInfo GetAttestationInfoFunc,
 	getAgentInfo GetAgentInfoFunc,
+	juryVotes JuryVotesFunc,
 	secaasAddressStr string,
 	lastN int,
 ) string {
@@ -94,6 +96,14 @@ func BuildAttestationChainTable(
 			verifierName = vName
 		}
 		verifierInfo := fmt.Sprintf("%s - %s", verifierName, verifierAddr.Hex())
+		// V3: the verifier is the juror whose vote closed the cycle, or the SECaaS
+		votes, err := juryVotes(attID)
+		if err != nil {
+			votes = fmt.Sprintf("ERROR: %v", err)
+		}
+		if votes != "" {
+			verifierInfo += " | jury: " + votes
+		}
 
 		// Add Row
 		table.Append([]string{

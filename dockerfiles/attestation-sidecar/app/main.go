@@ -183,6 +183,7 @@ func startAttestation(state *AppState) {
 		EventBatchSize:         state.Config.EventBatchSize,
 		EventPollInterval:      state.Config.EventPollInterval,
 		EventLookback:          state.Config.EventLookback,
+		ForceVerdict:           state.Config.ForceVerdict,
 	}
 
 	state.workersWg.Add(1)
@@ -258,6 +259,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("IterQ threshold (K) = %d", cfg.IterQThreshold)
+	if cfg.ForceVerdict != nil {
+		logger.Warn("FORCE_VERDICT is set: this agent votes %v on every cycle without comparing (experiment only)", *cfg.ForceVerdict)
+	}
 
 	// ---------------------------------------------------------
 	// 1.5 Compute Self-Integrity Info (Auto-Detection)
@@ -556,4 +560,4 @@ func main() {
 	logger.Info("Shutting down...")
 	stopAttestation(appState)
 	logger.Info("Bye.")
-}
+}

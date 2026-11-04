@@ -82,7 +82,7 @@ docker run --rm --name hardhat \
   -e PRIVATE_KEY="$private_key" \
   -e RPC_URL="$rpc_url_internal" \
   -e CHAIN_ID="$chain_id" \
-  -e ADMINS -e ADMIN_THRESHOLD \
+  -e ADMINS -e ADMIN_THRESHOLD -e JURY_SIZE -e JURY_THRESHOLD -e JURY_TIMEOUT_BLOCKS \
   ${contract_env_flag} \
   hardhat:latest \
   bash -lc "npx hardhat run scripts/deploy_contract.js --network besu"

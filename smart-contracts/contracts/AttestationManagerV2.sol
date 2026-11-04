@@ -50,6 +50,7 @@ contract AttestationManagerV2 {
     mapping(address => uint256) public referenceVersion;
     mapping(bytes32 => mapping(address => bool)) private approvedBy;
     mapping(bytes32 => uint256) private approvalCount;
+    uint256 public resetVersion; // approvals of a reset are bound to it, so they cannot be replayed
 
     event AgentRegistered(address agent);
     event AgentRemoved(address agent);
@@ -57,6 +58,7 @@ contract AttestationManagerV2 {
     event ReadyForEvaluation(bytes32 id);
     event AttestationCompleted(bytes32 id);
     event ChainReset();
+    event ResetApproved(address indexed admin, uint256 version);
     event ReferenceApproved(address indexed agent, bytes32 newReference, address indexed admin);
     event ReferenceSet(address indexed agent, bytes32 oldReference, bytes32 newReference, uint256 version);
 
@@ -96,8 +98,18 @@ contract AttestationManagerV2 {
         emit ReferenceSet(agentAddress, oldReference, newReference, referenceVersion[agentAddress]);
     }
 
+    // The admins reset the chain together: the reset applies once
+    // adminThreshold distinct admins have approved it. The SECaaS cannot, so
+    // it can no longer hand itself the verifier role.
     function ResetChain() public {
-        require(msg.sender == secaas, "Only the SECaaS can reset the chain");
+        require(isAdmin[msg.sender], "ResetChain : caller is not an admin");
+        bytes32 proposal = keccak256(abi.encode("ResetChain", resetVersion));
+        require(!approvedBy[proposal][msg.sender], "ResetChain : already approved by this admin");
+        approvedBy[proposal][msg.sender] = true;
+        approvalCount[proposal]++;
+        emit ResetApproved(msg.sender, resetVersion);
+        if (approvalCount[proposal] < adminThreshold) return;
+        resetVersion++;
         currentVerifier = secaas;
         emit ChainReset();
     }

@@ -41,6 +41,7 @@ CONTRACT_TO_IMAGE = {
     "AttestationManagerRR": "attestation-sidecar:latest",
     "AttestationManagerLV": "attestation-sidecar:latest",
     "AttestationManagerV2": "attestation-sidecar:latest",
+    "AttestationManagerV3": "attestation-sidecar:latest",
 }
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -324,6 +325,7 @@ def generate_attestation_yml(n: int, start: int = 1, config_dir: str = "./config
             f"      - LOG_LEVEL=${{LOG_LEVEL}}",
             f"      - ENABLE_LIBS_HASH=${{ENABLE_LIBS_HASH}}",
             f"      - SELF_INTEGRITY_ENABLED=${{SELF_INTEGRITY_ENABLED}}",
+            f"      - FORCE_VERDICT=${{FORCE_VERDICT_ROBOT{i}:-}}",  # experiment only: valid or invalid
             f"    ports:",
             f'      - "127.0.0.1:{port}:8000"',
             f"    volumes:",
@@ -395,6 +397,7 @@ def generate_attestation_remote_yml(n_start: int, n_end: int, config_dir: str = 
             f"      - LOG_LEVEL=${{LOG_LEVEL}}",
             f"      - ENABLE_LIBS_HASH=${{ENABLE_LIBS_HASH}}",
             f"      - SELF_INTEGRITY_ENABLED=${{SELF_INTEGRITY_ENABLED}}",
+            f"      - FORCE_VERDICT=${{FORCE_VERDICT_ROBOT{i}:-}}",  # experiment only: valid or invalid
             f"    ports:",
             f'      - "0.0.0.0:{port}:8000"',
             f"    volumes:",

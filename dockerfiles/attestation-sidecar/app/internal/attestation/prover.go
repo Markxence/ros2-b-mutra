@@ -15,6 +15,7 @@ import (
 	// "app/internal/metrics"
 	"app/internal/storage"
 	"app/internal/utils"
+
 )
 
 // SelfIntegrityInfo holds self-integrity check configuration
@@ -86,7 +87,7 @@ func ProcessProverAttestation(
 
 	// Send evidence with wait=true and timeout=60s. iterCount carries K for
 	// the on-chain record so the verifier can re-derive the chained reference.
-	_, err := bc.SendEvidence(attestationID, measurement, iterCount, waitForTx, 60)
+	txHash, err := bc.SendEvidence(attestationID, measurement, iterCount, waitForTx, 60)
 
 	timestamps["p_send_evidence_finished"] = utils.PerfNs()
 
@@ -151,12 +152,19 @@ func ProcessProverAttestation(
 
 	logger.Info("%s Waiting for verification result...", logPrefix)
 
-	// 4. Wait for Attestation to Close
+	// 4. Wait for Attestation to Close. With a jury (V3), hand the cycle to
+	// the SECaaS once its timeout has passed without enough votes.
+	jury := bc.HasJury()
+	var expireAt uint64 // first block where Expire is accepted, 0 = not known yet
+	expired := false
 	startWait = time.Now()
 	for {
 		state, err := bc.GetAttestationState(attestationID)
 		if err == nil && state == blockchain.Closed {
 			break
+		}
+		if jury && !expired && err == nil && state == blockchain.ReadyForEvaluation {
+			expired = expireIfDue(bc, attestationID, txHash, &expireAt, logPrefix)
 		}
 
 		select {
@@ -189,7 +197,25 @@ func ProcessProverAttestation(
 		}
 		logger.Info("%s Attestation Complete", logPrefix)
 		logger.Info("%s Result: %s", logPrefix, statusIcon)
-		logger.Info("%s Verified by: %s at %v", logPrefix, verifier.Hex(), ts)
+		verifiedBy := verifier.Hex()
+		votes := ""
+		if bc.HasJury() {
+			// V3: a cycle closed by its jury names the juror whose vote closed it
+			jurors, summary, err := bc.JuryVotes(attestationID)
+			if err != nil {
+				logger.Error("%s Failed to read the jury votes: %v", logPrefix, err)
+			}
+			for _, j := range jurors {
+				if j == verifier {
+					verifiedBy = "the jury, closing vote from " + verifier.Hex()
+				}
+			}
+			votes = summary
+		}
+		logger.Info("%s Verified by: %s at %v", logPrefix, verifiedBy, ts)
+		if votes != "" {
+			logger.Info("%s Jury votes: %s", logPrefix, votes)
+		}
 	}
 
 	timestamps["p_prover_finished"] = utils.PerfNs()
@@ -208,7 +234,42 @@ func ProcessProverAttestation(
 	}
 }
 
+// expireIfDue sends Expire once the head block reaches the jury timeout of
+// the cycle. Returns true once Expire has been tried, whatever its outcome:
+// a revert means the jury closed the cycle in the meantime.
+func expireIfDue(bc *blockchain.BlockchainClient, attID, txHash string, expireAt *uint64, logPrefix string) bool {
+	if *expireAt == 0 {
+		seed, err := bc.TxBlockNumber(txHash)
+		if err != nil {
+			return false // evidence not mined yet
+		}
+		timeout, err := bc.JuryTimeoutBlocks()
+		if err != nil {
+			logger.Error("%s Failed to read the jury timeout: %v", logPrefix, err)
+			return true
+		}
+		*expireAt = seed + timeout
+	}
+	// Gas is estimated at the head block, so wait for head = evidence + timeout.
+	head, err := bc.BlockNumber()
+	if err != nil || head < *expireAt {
+		return false
+	}
+	if _, err := bc.Expire(attID, true, 60); err != nil {
+		logger.Warn("%s Expire not sent: %v", logPrefix, err)
+		return true
+	}
+	logger.Info("%s Jury timeout reached, cycle handed to the SECaaS", logPrefix)
+	return true
+}
+
 // RunProverAndCleanup runs the prover and cleans up
+// A jury contract refuses a new round while the prover's last one is open,
+// so rounds are sent one after the other instead of losing a measurement.
+// ponytail: waiting rounds queue up without bound if the SSP stays shorter
+// than a round; drop or merge them if that happens.
+var roundMu sync.Mutex
+
 func RunProverAndCleanup(
 	bc *blockchain.BlockchainClient,
 	attestationID string,
@@ -219,12 +280,16 @@ func RunProverAndCleanup(
 	config ProverConfig,
 	activeAttestations *sync.Map,
 ) {
+	if bc.HasJury() {
+		roundMu.Lock()
+		defer roundMu.Unlock()
+	}
 	start := time.Now()
 	logPrefix := fmt.Sprintf("[Prover-%s]", utils.ShortAttID(attestationID, 4))
 
 	defer func() {
 		elapsed := time.Since(start)
-		logger.Info(logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed.Seconds())))
+		logger.Info("%s", logger.GreenText(fmt.Sprintf("%s completed in %.2fs", logPrefix, elapsed.Seconds())))
 		activeAttestations.Delete(attestationID)
 	}()
 
