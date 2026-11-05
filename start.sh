@@ -82,9 +82,9 @@ Options:
   --contract rr|lv|v2|v3  Smart contract variant (default: lv; rr = round-robin verifier election;
                  v2 = lv with the references anchored on chain by admin keys;
                  v3 = v2 with a jury of verifiers)
-  --jury N       v3 only: jurors drawn per cycle (default: 3)
-  --quorum T     v3 only: matching votes that close a cycle, 1..N (default: 2)
-                 T = N: the SECaaS judges any disagreement, its verdict is final
+  --jury N       v3 only: jurors drawn per cycle (default: 2)
+  --quorum T     v3 only: matching votes that close a cycle, 1..N (default: N, unanimous:
+                 any disagreement goes to the SECaaS, whose verdict is final)
   --iterq K      IterQ rolling-hash threshold: number of fresh measurements folded into
                  one on-chain attestation. K=1 = single-shot. Range: 1..10000 (default: 1)
   --no-cpu-limit Remove the CPU cgroup cap from sidecar containers entirely (uncapped).
@@ -142,8 +142,8 @@ NO_CPU_LIMIT_VAL="FALSE"
 CPU_LIMIT_EXPLICIT="FALSE"
 VARIANT_VAL="lv"
 CONTRACT_VAL="AttestationManagerLV"
-JURY_VAL="3"
-QUORUM_VAL="2"
+JURY_VAL="2"
+QUORUM_VAL=""  # empty: unanimous, the jury size
 ITERQ_VAL="1"
 BOOTSTRAP_REFS="TRUE"
 WAIT_RESULT_VAL="TRUE"
@@ -358,10 +358,11 @@ if [[ "$CONTRACT_VAL" == AttestationManagerV[23] ]]; then
   export ADMINS
   export ADMIN_THRESHOLD=2
 fi
-# V3: the jury closes a cycle with QUORUM_VAL matching votes out of JURY_VAL;
-# after 5 blocks (10 s) without a close, the cycle goes to the SECaaS.
+# V3: the jury closes a cycle with QUORUM_VAL matching votes out of JURY_VAL
+# (all of them by default); a disagreement that no quorum can outvote, or
+# 5 blocks (10 s) without a close, sends the cycle to the SECaaS.
 if [[ "$CONTRACT_VAL" == "AttestationManagerV3" ]]; then
-  export JURY_SIZE="$JURY_VAL" JURY_THRESHOLD="$QUORUM_VAL" JURY_TIMEOUT_BLOCKS=5
+  export JURY_SIZE="$JURY_VAL" JURY_THRESHOLD="${QUORUM_VAL:-$JURY_VAL}" JURY_TIMEOUT_BLOCKS=5
 fi
 
 # V2 and V3 store SHA256(h_ref || salt_agent) on chain, and the sidecars send the
